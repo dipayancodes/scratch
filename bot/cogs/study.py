@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
+from discord import app_commands
 from discord.ext import commands
 
 from bot.bot import StudyTimer
@@ -29,11 +31,12 @@ class Study(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @commands.group(name="task", invoke_without_command=True)
+    @commands.hybrid_group(name="task", description="Manage your study tasks.", invoke_without_command=True)
     async def task(self, ctx: commands.Context) -> None:
         await reply_embed(ctx, title="Task Commands", description="Use `-task add/list/done/delete/clear`.", color=INFO)
 
-    @task.command(name="add")
+    @task.command(name="add", description="Add a new study task.")
+    @app_commands.describe(task="The task you want to add.")
     async def task_add(self, ctx: commands.Context, *, task: str) -> None:
         task_id = self.bot.db.add_task(ctx.guild.id, ctx.author.id, task)
         await reply_embed(
@@ -44,7 +47,7 @@ class Study(commands.Cog):
             fields=[("Task ID", str(task_id), True), ("Task", task, False)],
         )
 
-    @task.command(name="list")
+    @task.command(name="list", description="Show all your pending study tasks.")
     async def task_list(self, ctx: commands.Context) -> None:
         tasks = self.bot.db.list_tasks(ctx.guild.id, ctx.author.id)
         if not tasks:
@@ -53,7 +56,8 @@ class Study(commands.Cog):
         value = "\n".join(f"`{row['id']}` {row['content']}" for row in tasks[:15])
         await reply_embed(ctx, title="Pending Tasks", description="Here are your current study tasks.", color=INFO, fields=[("Tasks", value, False)])
 
-    @task.command(name="done")
+    @task.command(name="done", description="Mark one of your tasks as completed.")
+    @app_commands.describe(task_id="The task ID you want to mark as done.")
     async def task_done(self, ctx: commands.Context, task_id: int) -> None:
         if not self.bot.db.complete_task(ctx.guild.id, ctx.author.id, task_id):
             await reply_embed(ctx, title="Task Not Found", description=f"No pending task exists with ID `{task_id}`.", color=ERROR)
@@ -67,23 +71,25 @@ class Study(commands.Cog):
             fields=[("Reward", "`10 study coins`", True)],
         )
 
-    @task.command(name="delete")
+    @task.command(name="delete", description="Delete one of your saved tasks.")
+    @app_commands.describe(task_id="The task ID you want to delete.")
     async def task_delete(self, ctx: commands.Context, task_id: int) -> None:
         if not self.bot.db.delete_task(ctx.guild.id, ctx.author.id, task_id):
             await reply_embed(ctx, title="Task Not Found", description=f"No task exists with ID `{task_id}`.", color=ERROR)
             return
         await reply_embed(ctx, title="Task Deleted", description=f"Task `{task_id}` has been removed.", color=SUCCESS)
 
-    @task.command(name="clear")
+    @task.command(name="clear", description="Delete all of your saved tasks.")
     async def task_clear(self, ctx: commands.Context) -> None:
         count = self.bot.db.clear_tasks(ctx.guild.id, ctx.author.id)
         await reply_embed(ctx, title="Tasks Cleared", description=f"Removed `{count}` tasks from your list.", color=SUCCESS)
 
-    @commands.group(name="study", invoke_without_command=True)
+    @commands.hybrid_group(name="study", description="Run focus and break timers.", invoke_without_command=True)
     async def study(self, ctx: commands.Context) -> None:
         await reply_embed(ctx, title="Study Timer Commands", description="Use `-study start/break/stop/status`.", color=INFO)
 
-    @study.command(name="start")
+    @study.command(name="start", description="Start a focused study session.")
+    @app_commands.describe(minutes="How many minutes the study session should last.")
     async def study_start(self, ctx: commands.Context, minutes: int) -> None:
         minutes = max(1, min(minutes, 240))
         key = (ctx.guild.id, ctx.author.id)
@@ -91,46 +97,47 @@ class Study(commands.Cog):
             await reply_embed(ctx, title="Timer Already Running", description="Stop the current session before starting a new one.", color=WARNING)
             return
         ends_at = datetime.now(UTC) + timedelta(minutes=minutes)
-        self.bot.active_timers[key] = StudyTimer(
-            user_id=ctx.author.id,
-            guild_id=ctx.guild.id,
-            channel_id=ctx.channel.id,
-            source_message_id=ctx.message.id,
-            minutes=minutes,
-            session_type="focus",
-            ends_at=ends_at,
-        )
-        await reply_embed(
+        response = await reply_embed(
             ctx,
             title="Focus Session Started",
             description=f"Your study timer is active for `{minutes}` minutes.",
             color=SUCCESS,
             fields=[("Ends", f"<t:{int(ends_at.timestamp())}:R>", True)],
         )
-
-    @study.command(name="break")
-    async def study_break(self, ctx: commands.Context, minutes: int) -> None:
-        minutes = max(1, min(minutes, 60))
-        key = (ctx.guild.id, ctx.author.id)
-        ends_at = datetime.now(UTC) + timedelta(minutes=minutes)
         self.bot.active_timers[key] = StudyTimer(
             user_id=ctx.author.id,
             guild_id=ctx.guild.id,
             channel_id=ctx.channel.id,
-            source_message_id=ctx.message.id,
+            source_message_id=response.id,
             minutes=minutes,
-            session_type="break",
+            session_type="focus",
             ends_at=ends_at,
         )
-        await reply_embed(
+
+    @study.command(name="break", description="Start a short break timer.")
+    @app_commands.describe(minutes="How many minutes the break should last.")
+    async def study_break(self, ctx: commands.Context, minutes: int) -> None:
+        minutes = max(1, min(minutes, 60))
+        key = (ctx.guild.id, ctx.author.id)
+        ends_at = datetime.now(UTC) + timedelta(minutes=minutes)
+        response = await reply_embed(
             ctx,
             title="Break Timer Started",
             description=f"Your break timer is active for `{minutes}` minutes.",
             color=INFO,
             fields=[("Ends", f"<t:{int(ends_at.timestamp())}:R>", True)],
         )
+        self.bot.active_timers[key] = StudyTimer(
+            user_id=ctx.author.id,
+            guild_id=ctx.guild.id,
+            channel_id=ctx.channel.id,
+            source_message_id=response.id,
+            minutes=minutes,
+            session_type="break",
+            ends_at=ends_at,
+        )
 
-    @study.command(name="stop")
+    @study.command(name="stop", description="Stop your current study or break timer.")
     async def study_stop(self, ctx: commands.Context) -> None:
         removed = self.bot.active_timers.pop((ctx.guild.id, ctx.author.id), None)
         if not removed:
@@ -138,7 +145,7 @@ class Study(commands.Cog):
             return
         await reply_embed(ctx, title="Timer Stopped", description="Your current study timer has been stopped.", color=SUCCESS)
 
-    @study.command(name="status")
+    @study.command(name="status", description="Check the remaining time on your current timer.")
     async def study_status(self, ctx: commands.Context) -> None:
         timer = self.bot.active_timers.get((ctx.guild.id, ctx.author.id))
         if not timer:
@@ -153,11 +160,12 @@ class Study(commands.Cog):
             fields=[("Remaining", f"`{remaining}` minutes", True)],
         )
 
-    @commands.group(name="notes", invoke_without_command=True)
+    @commands.hybrid_group(name="notes", description="Save and review study notes.", invoke_without_command=True)
     async def notes(self, ctx: commands.Context) -> None:
         await reply_embed(ctx, title="Notes Commands", description="Use `-notes add/view/list/delete`.", color=INFO)
 
-    @notes.command(name="add")
+    @notes.command(name="add", description="Save a note using title and content.")
+    @app_commands.describe(payload="Write it as: title | content")
     async def notes_add(self, ctx: commands.Context, *, payload: str) -> None:
         if "|" not in payload:
             await reply_embed(ctx, title="Invalid Notes Format", description="Use `-notes add <title> | <content>`.", color=ERROR)
@@ -172,7 +180,8 @@ class Study(commands.Cog):
             fields=[("Preview", content[:200], False)],
         )
 
-    @notes.command(name="view")
+    @notes.command(name="view", description="View one of your saved notes.")
+    @app_commands.describe(title="The exact note title you want to view.")
     async def notes_view(self, ctx: commands.Context, *, title: str) -> None:
         note = self.bot.db.get_note(ctx.guild.id, ctx.author.id, title)
         if not note:
@@ -186,7 +195,7 @@ class Study(commands.Cog):
             fields=[("Updated", note["created_at"].strftime("%Y-%m-%d %H:%M UTC"), True)],
         )
 
-    @notes.command(name="list")
+    @notes.command(name="list", description="List all of your saved notes.")
     async def notes_list(self, ctx: commands.Context) -> None:
         notes = self.bot.db.list_notes(ctx.guild.id, ctx.author.id)
         if not notes:
@@ -195,18 +204,20 @@ class Study(commands.Cog):
         value = "\n".join(f"- {row['title']}" for row in notes[:20])
         await reply_embed(ctx, title="Saved Notes", description="Your revision note library.", color=INFO, fields=[("Titles", value, False)])
 
-    @notes.command(name="delete")
+    @notes.command(name="delete", description="Delete one of your saved notes.")
+    @app_commands.describe(title="The exact note title you want to delete.")
     async def notes_delete(self, ctx: commands.Context, *, title: str) -> None:
         if not self.bot.db.delete_note(ctx.guild.id, ctx.author.id, title):
             await reply_embed(ctx, title="Note Not Found", description=f"No note exists with title `{title}`.", color=ERROR)
             return
         await reply_embed(ctx, title="Note Deleted", description=f"Removed note `{title}`.", color=SUCCESS)
 
-    @commands.group(name="plan", invoke_without_command=True)
+    @commands.hybrid_group(name="plan", description="Create or view study plans.", invoke_without_command=True)
     async def plan(self, ctx: commands.Context) -> None:
         await reply_embed(ctx, title="Planner Commands", description="Use `-plan set/view/today/generate`.", color=INFO)
 
-    @plan.command(name="set")
+    @plan.command(name="set", description="Save your study plan for a specific day.")
+    @app_commands.describe(day="Day name such as monday or today.", tasks="The tasks or plan for that day.")
     async def plan_set(self, ctx: commands.Context, day: str, *, tasks: str) -> None:
         self.bot.db.set_plan(ctx.guild.id, ctx.author.id, day, tasks)
         await reply_embed(
@@ -217,7 +228,8 @@ class Study(commands.Cog):
             fields=[("Tasks", tasks[:500], False)],
         )
 
-    @plan.command(name="view")
+    @plan.command(name="view", description="View the study plan for a specific day.")
+    @app_commands.describe(day="Day name such as monday or today.")
     async def plan_view(self, ctx: commands.Context, day: str) -> None:
         plan = self.bot.db.get_plan(ctx.guild.id, ctx.author.id, day)
         if not plan:
@@ -225,7 +237,7 @@ class Study(commands.Cog):
             return
         await reply_embed(ctx, title=f"Plan for {plan['day']}", description=plan["tasks"][:3500], color=INFO)
 
-    @plan.command(name="today")
+    @plan.command(name="today", description="Show your saved study plan for today.")
     async def plan_today(self, ctx: commands.Context) -> None:
         day = datetime.now().strftime("%A").lower()
         plan = self.bot.db.get_plan(ctx.guild.id, ctx.author.id, day)
@@ -234,16 +246,20 @@ class Study(commands.Cog):
             return
         await reply_embed(ctx, title="Today's Study Plan", description=plan["tasks"][:3500], color=INFO)
 
-    @plan.command(name="generate")
+    @plan.command(name="generate", description="Generate an AI study plan for an exam.")
+    @app_commands.describe(exam="The exam you are preparing for.", days="How many days you have left to prepare.")
     async def plan_generate(self, ctx: commands.Context, exam: str, days: int) -> None:
+        if getattr(ctx, "interaction", None) is not None and not ctx.interaction.response.is_done():
+            await ctx.defer()
         result = await self.bot.ai.generate_plan(exam, days)
         await reply_embed(ctx, title=f"Generated Plan: {exam}", description=result[:3500], color=INFO)
 
-    @commands.group(name="progress", invoke_without_command=True)
+    @commands.hybrid_group(name="progress", description="Log and review study progress.", invoke_without_command=True)
     async def progress(self, ctx: commands.Context) -> None:
         await reply_embed(ctx, title="Progress Commands", description="Use `-progress add/stats/weekly/leaderboard`.", color=INFO)
 
-    @progress.command(name="add")
+    @progress.command(name="add", description="Log study hours for a subject.")
+    @app_commands.describe(subject="The subject you studied.", hours="How many hours you studied.")
     async def progress_add(self, ctx: commands.Context, subject: str, hours: float) -> None:
         hours = max(0.25, min(hours, 24.0))
         self.bot.db.add_progress(ctx.guild.id, ctx.author.id, subject, hours)
@@ -255,7 +271,7 @@ class Study(commands.Cog):
             fields=[("Coin Reward", f"`{int(hours * 20)}`", True)],
         )
 
-    @progress.command(name="stats")
+    @progress.command(name="stats", description="Show your total logged study hours.")
     async def progress_stats(self, ctx: commands.Context) -> None:
         totals = self.bot.db.get_progress_totals(ctx.guild.id, ctx.author.id)
         streak = self.bot.db.refresh_streak(ctx.guild.id, ctx.author.id)
@@ -271,7 +287,7 @@ class Study(commands.Cog):
             ],
         )
 
-    @progress.command(name="weekly")
+    @progress.command(name="weekly", description="Show your weekly study breakdown.")
     async def progress_weekly(self, ctx: commands.Context) -> None:
         rows = self.bot.db.get_weekly_progress(ctx.guild.id, ctx.author.id)
         if not rows:
@@ -280,7 +296,7 @@ class Study(commands.Cog):
         value = "\n".join(f"- {row['subject']}: `{row['hours']}h`" for row in rows[:10])
         await reply_embed(ctx, title="Weekly Progress", description="Your last 7 days by subject.", color=INFO, fields=[("Breakdown", value, False)])
 
-    @progress.command(name="leaderboard")
+    @progress.command(name="leaderboard", description="Show the server leaderboard by logged study hours.")
     async def progress_leaderboard(self, ctx: commands.Context) -> None:
         rows = self.bot.db.progress_leaderboard(ctx.guild.id)
         if not rows:
@@ -292,7 +308,9 @@ class Study(commands.Cog):
             lines.append(f"{index}. {(member.display_name if member else row['user_id'])} - `{row['total_hours']}h`")
         await reply_embed(ctx, title="Study Hours Leaderboard", description="\n".join(lines), color=INFO)
 
-    @commands.command(name="streak")
+    @commands.hybrid_command(name="streak", description="Check your study streak or reset it.")
+    @app_commands.describe(action="Choose reset if you want to reset your streak.")
+    @app_commands.choices(action=[app_commands.Choice(name="reset", value="reset")])
     async def streak(self, ctx: commands.Context, action: str = "") -> None:
         if action.lower() == "reset":
             self.bot.db.reset_streak(ctx.guild.id, ctx.author.id)
@@ -310,17 +328,18 @@ class Study(commands.Cog):
             ],
         )
 
-    @commands.group(name="goal", invoke_without_command=True)
+    @commands.hybrid_group(name="goal", description="Set and review your daily study goal.", invoke_without_command=True)
     async def goal(self, ctx: commands.Context) -> None:
         await reply_embed(ctx, title="Goal Commands", description="Use `-goal set/status`.", color=INFO)
 
-    @goal.command(name="set")
+    @goal.command(name="set", description="Set your daily study goal in hours.")
+    @app_commands.describe(hours_per_day="How many hours you want to study each day.")
     async def goal_set(self, ctx: commands.Context, hours_per_day: float) -> None:
         hours_per_day = max(0.5, min(hours_per_day, 16.0))
         self.bot.db.set_goal(ctx.guild.id, ctx.author.id, hours_per_day)
         await reply_embed(ctx, title="Goal Updated", description=f"Your daily study goal is now `{hours_per_day}` hours.", color=SUCCESS)
 
-    @goal.command(name="status")
+    @goal.command(name="status", description="Check how close you are to your daily goal.")
     async def goal_status(self, ctx: commands.Context) -> None:
         summary = self.bot.db.analytics_summary(ctx.guild.id, ctx.author.id)
         await reply_embed(
@@ -335,11 +354,12 @@ class Study(commands.Cog):
             ],
         )
 
-    @commands.group(name="remind", invoke_without_command=True)
+    @commands.hybrid_group(name="remind", description="Create and manage study reminders.", invoke_without_command=True)
     async def remind(self, ctx: commands.Context) -> None:
         await reply_embed(ctx, title="Reminder Commands", description="Use `-remind me/daily/list`.", color=INFO)
 
-    @remind.command(name="me")
+    @remind.command(name="me", description="Create a one-time reminder.")
+    @app_commands.describe(duration="Time like 30m, 2h, or 1d.", task="What you want to be reminded about.")
     async def remind_me(self, ctx: commands.Context, duration: str, *, task: str) -> None:
         try:
             delta = parse_duration(duration)
@@ -353,9 +373,9 @@ class Study(commands.Cog):
             ctx.author.id,
             task,
             remind_at,
-            ctx.message.id,
+            0,
         )
-        await reply_embed(
+        response = await reply_embed(
             ctx,
             title="Reminder Created",
             description=f"Your reminder is scheduled.",
@@ -366,8 +386,10 @@ class Study(commands.Cog):
                 ("Task", task[:200], False),
             ],
         )
+        self.bot.db.update_reminder_source(reminder_id, response.id)
 
-    @remind.command(name="daily")
+    @remind.command(name="daily", description="Create a reminder that repeats every day.")
+    @app_commands.describe(time_value="24-hour time like 07:30 or 21:15.", task="The daily reminder message.")
     async def remind_daily(self, ctx: commands.Context, time_value: str, *, task: str = "Daily study reminder") -> None:
         try:
             hour, minute = parse_daily_time(time_value)
@@ -384,19 +406,20 @@ class Study(commands.Cog):
             ctx.author.id,
             task,
             remind_at,
-            ctx.message.id,
+            0,
             recurring="daily",
             daily_time=time_value,
         )
-        await reply_embed(
+        response = await reply_embed(
             ctx,
             title="Daily Reminder Created",
             description=f"Your daily reminder is active.",
             color=SUCCESS,
             fields=[("Reminder ID", str(reminder_id), True), ("Next Run", f"<t:{int(remind_at.timestamp())}:R>", True)],
         )
+        self.bot.db.update_reminder_source(reminder_id, response.id)
 
-    @remind.command(name="list")
+    @remind.command(name="list", description="List all of your active reminders.")
     async def remind_list(self, ctx: commands.Context) -> None:
         reminders = self.bot.db.list_reminders(ctx.guild.id, ctx.author.id)
         if not reminders:
@@ -408,11 +431,12 @@ class Study(commands.Cog):
         ]
         await reply_embed(ctx, title="Your Reminders", description="\n".join(lines), color=INFO)
 
-    @commands.group(name="exam", invoke_without_command=True)
+    @commands.hybrid_group(name="exam", description="Track exams and countdowns.", invoke_without_command=True)
     async def exam(self, ctx: commands.Context) -> None:
         await reply_embed(ctx, title="Exam Commands", description="Use `-exam add/list/countdown`.", color=INFO)
 
-    @exam.command(name="add")
+    @exam.command(name="add", description="Add an upcoming exam.")
+    @app_commands.describe(subject="The exam subject.", date_value="Exam date in YYYY-MM-DD format.")
     async def exam_add(self, ctx: commands.Context, subject: str, date_value: str) -> None:
         try:
             exam_date = parse_exam_date(date_value)
@@ -428,7 +452,7 @@ class Study(commands.Cog):
             fields=[("Exam ID", str(exam_id), True)],
         )
 
-    @exam.command(name="list")
+    @exam.command(name="list", description="List all of your saved exams.")
     async def exam_list(self, ctx: commands.Context) -> None:
         exams = self.bot.db.list_exams(ctx.guild.id, ctx.author.id)
         if not exams:
@@ -437,7 +461,7 @@ class Study(commands.Cog):
         value = "\n".join(f"`{row['id']}` {row['subject']} - `{row['exam_date']}`" for row in exams[:15])
         await reply_embed(ctx, title="Upcoming Exams", description=value, color=INFO)
 
-    @exam.command(name="countdown")
+    @exam.command(name="countdown", description="Show how many days are left until your exams.")
     async def exam_countdown(self, ctx: commands.Context) -> None:
         exams = self.bot.db.list_exams(ctx.guild.id, ctx.author.id)
         if not exams:

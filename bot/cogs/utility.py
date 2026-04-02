@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import operator
 
+from discord import app_commands
 from discord.ext import commands
 
 from bot.ui import ERROR, INFO, SUCCESS, reply_embed
@@ -41,7 +42,8 @@ class Utility(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @commands.command(name="calc", aliases=["calculator"])
+    @commands.hybrid_command(name="calc", aliases=["calculator"], description="Calculate a math expression safely.")
+    @app_commands.describe(expression="The math expression to calculate.")
     async def calc(self, ctx: commands.Context, *, expression: str) -> None:
         try:
             result = safe_calculate(expression)

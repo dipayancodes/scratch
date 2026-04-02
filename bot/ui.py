@@ -46,6 +46,12 @@ async def reply_embed(
         fields=fields,
         footer=footer,
     )
+    interaction = getattr(ctx, "interaction", None)
+    if interaction is not None:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(embed=embed)
+            return await interaction.original_response()
+        return await interaction.followup.send(embed=embed, wait=True)
     return await ctx.reply(embed=embed, mention_author=False)
 
 

@@ -359,6 +359,9 @@ class Database:
     def delete_reminder(self, reminder_id: int) -> None:
         self.db.reminders.delete_one({"id": reminder_id})
 
+    def update_reminder_source(self, reminder_id: int, message_id: int) -> None:
+        self.db.reminders.update_one({"id": reminder_id}, {"$set": {"source_message_id": message_id}})
+
     def reschedule_daily_reminder(self, reminder_id: int, next_run: datetime) -> None:
         self.db.reminders.update_one({"id": reminder_id}, {"$set": {"remind_at": next_run}})
 

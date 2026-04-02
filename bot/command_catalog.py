@@ -31,7 +31,7 @@ COMMAND_DOCS: tuple[CommandDoc, ...] = (
     CommandDoc("goal", "Tracking", "Set and track a daily study goal.", "-goal set/status", "-goal set 4"),
     CommandDoc("remind", "Utility", "Create one-time or daily reminders.", "-remind me/daily/list", "-remind me 30m Start mock test"),
     CommandDoc("ask", "AI", "Ask the AI study assistant a question.", "-ask <question>", "-ask Explain Kirchhoff's law"),
-    CommandDoc("summary", "AI", "Summarize study text.", "-summary <text>", "-summary Paste your paragraph here"),
+    CommandDoc("summary", "AI", "Summarize study text.", "-summary <text>", "-summary Paste your paragraph here", ("summery",)),
     CommandDoc("analyze", "AI", "Analyze an attached text file.", "-analyze", "-analyze"),
     CommandDoc("exam", "Tracking", "Track exams and countdowns.", "-exam add/list/countdown", "-exam add chemistry 2026-04-20"),
     CommandDoc("leaderboard", "Gamification", "Show top students by study coins.", "-leaderboard", "-leaderboard"),

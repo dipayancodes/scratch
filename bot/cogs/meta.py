@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from discord import app_commands
 from discord.ext import commands
 
 from bot.command_catalog import COMMAND_DOCS, COMMAND_LOOKUP
@@ -12,7 +13,7 @@ class Meta(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @commands.command(name="help")
+    @commands.hybrid_command(name="help", description="Show a categorized list of all available commands.")
     async def help_command(self, ctx: commands.Context) -> None:
         grouped: dict[str, list[str]] = defaultdict(list)
         for doc in COMMAND_DOCS:
@@ -26,7 +27,8 @@ class Meta(commands.Cog):
             fields=fields,
         )
 
-    @commands.command(name="command", aliases=["commands", "cmds"])
+    @commands.hybrid_command(name="command", aliases=["commands", "cmds"], description="Show detailed information about a specific command.")
+    @app_commands.describe(name="The command name you want details for.")
     async def command_detail(self, ctx: commands.Context, *, name: str) -> None:
         key = name.strip().lower()
         doc = COMMAND_LOOKUP.get(key)
@@ -50,7 +52,7 @@ class Meta(commands.Cog):
             ],
         )
 
-    @commands.command(name="ping")
+    @commands.hybrid_command(name="ping", description="Check the bot latency.")
     async def ping(self, ctx: commands.Context) -> None:
         await reply_embed(
             ctx,
@@ -59,7 +61,7 @@ class Meta(commands.Cog):
             color=SUCCESS,
         )
 
-    @commands.command(name="about")
+    @commands.hybrid_command(name="about", description="Show bot information and system status.")
     async def about(self, ctx: commands.Context) -> None:
         await reply_embed(
             ctx,

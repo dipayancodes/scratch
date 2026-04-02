@@ -48,6 +48,7 @@ class StudyBot(commands.Bot):
         self.active_timers: dict[tuple[int, int], StudyTimer] = {}
         self.quiz_sessions: dict[tuple[int, int], dict[str, object]] = {}
         self.distraction_cooldowns: dict[tuple[int, int], datetime] = {}
+        self._synced_guilds: set[int] = set()
         self.add_check(self._guild_only_check)
 
     async def _guild_only_check(self, ctx: commands.Context) -> bool:
@@ -70,6 +71,12 @@ class StudyBot(commands.Bot):
         log.info("Loaded study bot extensions")
 
     async def on_ready(self) -> None:
+        for guild in self.guilds:
+            if guild.id in self._synced_guilds:
+                continue
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            self._synced_guilds.add(guild.id)
         log.info(
             "Ready as %s (%s) | prefix=%s | mongo_db=%s",
             self.user,
