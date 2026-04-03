@@ -48,11 +48,15 @@ async def reply_embed(
     )
     interaction = getattr(ctx, "interaction", None)
     if interaction is not None:
+        # For interaction-based invocation, include a mention in the content
+        mention = ctx.author.mention if getattr(ctx, "author", None) is not None else ""
+        allowed = discord.AllowedMentions(users=True)
         if not interaction.response.is_done():
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(content=mention, embed=embed, allowed_mentions=allowed)
             return await interaction.original_response()
-        return await interaction.followup.send(embed=embed, wait=True)
-    return await ctx.reply(embed=embed, mention_author=False)
+        return await interaction.followup.send(content=mention, embed=embed, wait=True, allowed_mentions=allowed)
+    # For message-based invocation, include the author's mention in the content so they get pinged
+    return await ctx.reply(content=ctx.author.mention, embed=embed, mention_author=False)
 
 
 async def reply_to_message(
@@ -73,4 +77,5 @@ async def reply_to_message(
         fields=fields,
         footer=footer,
     )
-    return await message.reply(embed=embed, mention_author=False)
+    # Mention the provided user explicitly so they receive a ping
+    return await message.reply(content=user.mention, embed=embed, mention_author=False)

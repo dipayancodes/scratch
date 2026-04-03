@@ -1,0 +1,51 @@
+( Global instructions )
+edit the code based the instructions or making changes instructions given down below
+add subjects as a global subjects common subjects like maths , phy , chem , biology , computer science , literature and etc. dont end here , just add more subjects which is applicable for the students at the age of teenage the common and widely used subjects around the world in the schools and colleges. 
+and if user dosen't find their subject add an option as "others" and if the user chooses "others" it will open another input to write the subject they wanna add and it will be saved for that user account only. 
+
+and wherever the subject input is there , show the options of all the subjects listed 
+
+make these subjects as a list or common thing to use it at the commands everything or certainly
+
+and reward every users a less coins or coins based on their performance or the usage of the bots. if the user comes in the list of leaderboards weekly , they will be reward by 100 coins. and add many things in the shop so that user can keep buying or upgrading whatever wants to feel like doing. 
+
+
+
+1. -room command -> when i use room command /room , it should firstly create an option of the commands aliases like create , join , leave and etc in the slash commmand , also suppose i made a room with my id or a particular id . that room should create and automatically make join there , it's nothing i have to join manually whoever creates it they should join it automatically and next is join. now suppose i made a room with a particular name it should store already for my id only. it will that name of the vc should become an option if i ever use that vc or use /room join command it should automatically pop up the room which i created with my id as an option to join it directly. and also make a "delete" aliases , so if a user wants to delete any particular room made by them it should show as an options of the rooms which they made stored in the databases or somehow and use delete command the room will be deleted, also make an another aliases which is "Lock" if a user join any of his room and wants to lock the room they can lock it. and also can unlock it. for that make unlock aliases too. and aditionally check everything at once and fix the issues if you find anything. and make every room under this category only = "1453297428181684309" ( this is the category id)
+
+2. -shop command -> now in this shop command everything is okay and fine . i just want you to make something interesting for the students or the teenage peoples or the peoples around 20 - 30 age people , make something interesting in the gamifications , which can be funfull to play by all , use emojis if you want or do anything which is intersting , i mean so that people will use more commands everytime , to earn coins and buy stuffs. and add many more things which is interesting , use your intelligence and add those intersting stuffs which is fun to play and utilize
+
+3. -help command -> now what i want is that , whenever an user uses this command it will reply only with something to encourage him to check his dm. and the bot will send everything in dm , not in chat. whatever till now the bot is sending when an user uses /help command , it should send the same thing to their dm , but not chat. and else everythings okay. also check everything twice to fix everything
+
+4. -notes command -> now in this command i have many things to discuss, first is when i use notes add command it shows a payload option and in the about it's writtenwrite title | content. which is very disturbing and annoying. what want you to do is that when someone wants to add notes. it should show an option of title not payload. it should show the title and content. both the inputs. and whoever adds anything the notes should save for that particular user only. on their databases. 
+ 
+next in notes view command , whenever an user uses notes view , it will ask for the id number not titile name of the notes , for that they should use notes list to see their id number . instead of asking titile name it should ask id number show the notes of that particular user 
+
+next in note list command , whenever the user uses note list command it should show the list of the notes with the serial number as the id number of that particularnote. so that it should be help full for /notes view when it should replace title with id number as an input. 
+
+and also if a user wants they can delete the notes by using /notes delete command with the id number of that note. 
+
+5. remove the flash commands and quiz commands from now on. or disable it or comment it out the codes or whatever , fully disable these two commands also remove it from help section cuz it's not functional now. 
+
+6. -resources command -> whenever the user uses /resources add command ,  for the subject input add all the listed subjects as options which instructed and given above. thats it
+and for the resources list command also whenever the subject input comes it should show all the listed subjects as options and whenever it makes the list it should show all the listed things with id number , so whenever that particular user wants to delete any of the resources it should delete with the help of the subjects input and the id number under it of the subject
+
+7. next in the moderation group whichever commands are listed there except the focus command . it should be allowed and permited to those users who have the "Staff" role id is 1453305075740053645 and "administrator" role role id is 1453304133506564278.
+
+8. -task command -> in this command when the user uses /task clear , add an optional input option of id number suppose if a user wants to delete a single task then they can use id number option to type id number of the task. but that will be optional , if the user only uses /task clear it will clear all the tasks for that user only.
+
+9. -study command -> in this command if the user uses /study starts command it should have minutes and hour option only. but it will be optional like , if the user chooses 1hour , then they can keep the min input empty and write 1 in the hour input. then it will start counting from 1 hour only. 
+
+10. -plan command -> in this command if the user uses /plan set for the day input add monday to - sunday day names as an options to select it. also use to calender to understand which monday or tuesday or anyday they're talking about and task option is okay. 
+
+and for the /plan view command view command in the day section list the options of the days with dates which that user has made before. only that only nothing else. then it will show the tasks of those things. 
+
+and for the /plan today command if the user uses this command it will show the plans of the current date & day only which was added before by the user , so that user can understand that they have to do these things today. 
+
+and for now only disable the /plan generate and remove it from help section , for now only don't delete the codes or anything just comment out the codes for this later i may use it. 
+
+11. -about command -> whenever user uses the /about command it shouldn't show the storage thing which is mentioned as mongo db : study_os. remove that thing don't show it. and also don't show AI mode enabled and etc. don't show it. make it disabled. 
+
+12. -exam command -> for the /exam countdown command add an input of subject which will have listed all the subjects . which will help see how many days are left for that exam and also if the user chooses nothing then it will show all the dates of all the exams listed, when the exam dates expires it will automatically delete from the list of the users. 
+
+13. -remind command -> for the /remind command whatever the user chooses daily or me , remind them via DM only. and also for the list thing whenever it will list all the tasks , list it with id number so that whenever an user wish to delete it it should delete it with id number only.
