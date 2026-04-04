@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+import discord
 from discord import app_commands
 from discord.ext import commands
 
 from bot.command_catalog import COMMAND_DOCS, COMMAND_LOOKUP
-from bot.ui import INFO, SUCCESS, WARNING, reply_embed
+from bot.ui import INFO, SUCCESS, WARNING, make_embed, reply_embed
 
 
 class Meta(commands.Cog):
@@ -19,12 +20,28 @@ class Meta(commands.Cog):
         for doc in COMMAND_DOCS:
             grouped[doc.category].append(f"`{doc.usage}`")
         fields = [(category, "\n".join(commands_list), False) for category, commands_list in sorted(grouped.items())]
-        await reply_embed(
-            ctx,
+        embed = make_embed(
+            user=ctx.author,
             title="Study OS Command Center",
-            description="Every command below uses reply-based embeds and is organized by function.",
+            description="Every command below is organized by function.",
             color=INFO,
             fields=fields,
+        )
+        try:
+            await ctx.author.send(embed=embed)
+        except discord.Forbidden:
+            await reply_embed(
+                ctx,
+                title="DM Delivery Failed",
+                description="I could not DM you the help menu. Turn on DMs for this server and try again.",
+                color=WARNING,
+            )
+            return
+        await reply_embed(
+            ctx,
+            title="Check Your DMs",
+            description="I sent the full command guide to your DM so the chat stays clean.",
+            color=SUCCESS,
         )
 
     @commands.hybrid_command(name="command", aliases=["commands", "cmds"], description="Show detailed information about a specific command.")
@@ -70,8 +87,8 @@ class Meta(commands.Cog):
             color=INFO,
             fields=[
                 ("Prefix", f"`{self.bot.settings.prefix}`", True),
-                ("Storage", f"`MongoDB: {self.bot.settings.mongodb_database}`", True),
-                ("AI Mode", "Enabled" if self.bot.ai.enabled else "Fallback mode", True),
+                ("Command Style", "`Hybrid slash + prefix commands`", True),
+                ("Experience", "`Embeds, replies, reminders, study tracking`", True),
             ],
         )
 

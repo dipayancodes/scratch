@@ -11,7 +11,7 @@ from bot.ai import StudyAI
 from bot.config import Settings, load_settings
 from bot.database import Database
 from bot.logging_setup import configure_logging
-from bot.ui import INFO, SUCCESS, WARNING, reply_embed, reply_to_message
+from bot.ui import INFO, SUCCESS, WARNING, make_embed, reply_embed, reply_to_message
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ class StudyBot(commands.Bot):
             await self.load_extension(extension)
         self.reminder_worker.start()
         self.timer_worker.start()
+        self.weekly_reward_worker.start()
         log.info("Loaded study bot extensions")
 
     async def on_ready(self) -> None:
@@ -140,6 +141,10 @@ class StudyBot(commands.Bot):
             self.db.stop_voice_session(member.guild.id, member.id)
             self.db.start_voice_session(member.guild.id, member.id, after.channel.id)
 
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
+        if isinstance(channel, discord.VoiceChannel):
+            self.db.deactivate_room(channel.id)
+
     async def reply_to_source(
         self,
         *,
@@ -165,15 +170,26 @@ class StudyBot(commands.Bot):
         except discord.HTTPException:
             return
 
+    async def send_dm_embed(self, *, user_id: int, title: str, description: str, color: discord.Color) -> None:
+        user = self.get_user(user_id)
+        if user is None:
+            try:
+                user = await self.fetch_user(user_id)
+            except discord.HTTPException:
+                return
+        embed = make_embed(user=user, title=title, description=description, color=color)
+        try:
+            await user.send(embed=embed)
+        except discord.HTTPException:
+            return
+
     @tasks.loop(seconds=15)
     async def reminder_worker(self) -> None:
         if not self.is_ready():
             return
         now = datetime.now(UTC)
         for reminder in self.db.due_reminders(now):
-            await self.reply_to_source(
-                channel_id=reminder["channel_id"],
-                message_id=reminder["source_message_id"],
+            await self.send_dm_embed(
                 user_id=reminder["user_id"],
                 title="Reminder",
                 description=reminder["message"],
@@ -184,6 +200,24 @@ class StudyBot(commands.Bot):
                 self.db.reschedule_daily_reminder(reminder["id"], next_run)
             else:
                 self.db.delete_reminder(reminder["id"])
+
+    @tasks.loop(hours=1)
+    async def weekly_reward_worker(self) -> None:
+        if not self.is_ready():
+            return
+        now = datetime.now(UTC)
+        if now.weekday() != 0:
+            return
+        previous_week = (now - timedelta(days=7)).isocalendar()
+        week_key = f"{previous_week.year}-W{previous_week.week:02d}"
+        for guild in self.guilds:
+            if self.db.get_weekly_reward_status(guild.id, week_key):
+                continue
+            rows = self.db.weekly_progress_leaderboard(guild.id, limit=10)
+            rewarded_user_ids = [row["user_id"] for row in rows]
+            for user_id in rewarded_user_ids:
+                self.db.add_coins(guild.id, user_id, 100)
+            self.db.mark_weekly_rewards(guild.id, week_key, rewarded_user_ids)
 
     @tasks.loop(seconds=10)
     async def timer_worker(self) -> None:
@@ -216,6 +250,7 @@ class StudyBot(commands.Bot):
 
     @reminder_worker.before_loop
     @timer_worker.before_loop
+    @weekly_reward_worker.before_loop
     async def before_background_workers(self) -> None:
         await self.wait_until_ready()
 
@@ -226,9 +261,7 @@ def build_bot() -> StudyBot:
     try:
         db = Database(settings.mongodb_uri, settings.mongodb_database)
     except Exception as exc:
-        raise RuntimeError(
-            f"MongoDB connection failed for {settings.mongodb_uri}. Start MongoDB or set MONGODB_URI to a reachable server."
-        ) from exc
+        raise RuntimeError(f"MongoDB initialization failed for {settings.mongodb_uri}: {exc}") from exc
     return StudyBot(settings, db)
 
 

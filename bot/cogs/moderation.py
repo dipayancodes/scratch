@@ -10,9 +10,27 @@ from discord.ext import commands
 from bot.ui import ERROR, INFO, SUCCESS, WARNING, reply_embed
 
 
+STAFF_ROLE_IDS = {1453305075740053645, 1453304133506564278}
+
+
 class Moderation(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+
+    async def _ensure_staff_access(self, ctx: commands.Context) -> bool:
+        member = ctx.author if isinstance(ctx.author, discord.Member) else ctx.guild.get_member(ctx.author.id)
+        if member is None:
+            await reply_embed(ctx, title="Member Not Found", description="Could not verify your server roles.", color=ERROR)
+            return False
+        if any(role.id in STAFF_ROLE_IDS for role in member.roles):
+            return True
+        await reply_embed(
+            ctx,
+            title="Permission Error",
+            description="Only members with the Staff or Administrator server roles can use that moderation command.",
+            color=WARNING,
+        )
+        return False
 
     @commands.hybrid_command(name="focus", description="Turn focus mode on or off.")
     @app_commands.describe(state="Choose whether focus mode should be on or off.")
@@ -32,8 +50,9 @@ class Moderation(commands.Cog):
 
     @commands.hybrid_command(name="warn", description="Warn a user for breaking study-server rules.")
     @app_commands.describe(member="The user you want to warn.", reason="Why you are warning the user.")
-    @commands.has_permissions(manage_messages=True)
     async def warn(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided") -> None:
+        if not await self._ensure_staff_access(ctx):
+            return
         warning_id = self.bot.db.add_warning(ctx.guild.id, member.id, ctx.author.id, reason)
         await reply_embed(
             ctx,
@@ -45,8 +64,9 @@ class Moderation(commands.Cog):
 
     @commands.hybrid_command(name="mute", description="Temporarily mute a user.")
     @app_commands.describe(member="The user you want to mute.", minutes="How long the mute should last.", reason="Why you are muting the user.")
-    @commands.has_permissions(moderate_members=True)
     async def mute(self, ctx: commands.Context, member: discord.Member, minutes: int = 10, *, reason: str = "Focus reset") -> None:
+        if not await self._ensure_staff_access(ctx):
+            return
         until = discord.utils.utcnow() + timedelta(minutes=max(1, minutes))
         await member.timeout(until, reason=reason)
         await reply_embed(
@@ -59,29 +79,33 @@ class Moderation(commands.Cog):
 
     @commands.hybrid_command(name="unmute", description="Remove a user's mute.")
     @app_commands.describe(member="The user you want to unmute.")
-    @commands.has_permissions(moderate_members=True)
     async def unmute(self, ctx: commands.Context, member: discord.Member) -> None:
+        if not await self._ensure_staff_access(ctx):
+            return
         await member.timeout(None)
         await reply_embed(ctx, title="User Unmuted", description=f"{member.mention} can speak again.", color=SUCCESS)
 
     @commands.hybrid_command(name="kick", description="Kick a user from the server.")
     @app_commands.describe(member="The user you want to kick.", reason="Why you are kicking the user.")
-    @commands.has_permissions(kick_members=True)
     async def kick(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided") -> None:
+        if not await self._ensure_staff_access(ctx):
+            return
         await member.kick(reason=reason)
         await reply_embed(ctx, title="User Kicked", description=f"{member.mention} was removed from the server.", color=WARNING, fields=[("Reason", reason[:300], False)])
 
     @commands.hybrid_command(name="ban", description="Ban a user from the server.")
     @app_commands.describe(member="The user you want to ban.", reason="Why you are banning the user.")
-    @commands.has_permissions(ban_members=True)
     async def ban(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided") -> None:
+        if not await self._ensure_staff_access(ctx):
+            return
         await member.ban(reason=reason)
         await reply_embed(ctx, title="User Banned", description=f"{member.mention} was banned from the server.", color=ERROR, fields=[("Reason", reason[:300], False)])
 
     @commands.hybrid_command(name="clear", description="Delete a number of recent messages.")
     @app_commands.describe(messages="How many recent messages to delete.")
-    @commands.has_permissions(manage_messages=True)
     async def clear(self, ctx: commands.Context, messages: int) -> None:
+        if not await self._ensure_staff_access(ctx):
+            return
         limit = max(1, min(messages, 100))
         command_message_id = ctx.message.id if ctx.message is not None else 0
         deleted = await ctx.channel.purge(
