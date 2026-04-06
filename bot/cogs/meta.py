@@ -19,7 +19,10 @@ class Meta(commands.Cog):
         grouped: dict[str, list[str]] = defaultdict(list)
         for doc in COMMAND_DOCS:
             grouped[doc.category].append(f"`{doc.usage}`")
-        fields = [(category, "\n".join(commands_list), False) for category, commands_list in sorted(grouped.items())]
+        category_order = ["Productivity", "Learning", "Tracking", "AI", "Utility"]
+        ordered_categories = [category for category in category_order if category in grouped]
+        ordered_categories.extend(category for category in grouped if category not in ordered_categories)
+        fields = [(category, "\n".join(grouped[category]), False) for category in ordered_categories]
         embed = make_embed(
             user=ctx.author,
             title="Study OS Command Center",

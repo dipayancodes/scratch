@@ -110,10 +110,15 @@ class Database:
             self._backfill_numeric_ids(collection_name)
         self._backfill_plan_dates()
         self.db.tasks.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("status", ASCENDING)])
+        self.db.users.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
         self.db.notes.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("id", ASCENDING)], unique=True)
         self.db.plans.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("target_date", ASCENDING)], unique=True)
+        self.db.progress.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("logged_at", DESCENDING)])
         self.db.progress_logs.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("logged_at", DESCENDING)])
+        self.db.streaks.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("day", ASCENDING)], unique=True)
         self.db.study_days.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("day", ASCENDING)], unique=True)
+        self.db.coins.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
+        self.db.achievements.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("key", ASCENDING)], unique=True)
         self.db.user_stats.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
         self.db.flashcards.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("id", DESCENDING)])
         self.db.resources.create_index([("guild_id", ASCENDING), ("subject_key", ASCENDING), ("id", DESCENDING)])
@@ -136,21 +141,41 @@ class Database:
         return int(counter["value"])
 
     def ensure_user_stats(self, guild_id: int, user_id: int) -> None:
+        defaults = {
+            "coins": 0,
+            "daily_goal_hours": 2.0,
+            "focus_mode": False,
+            "streak": 0,
+            "longest_streak": 0,
+            "total_focus_minutes": 0,
+            "total_voice_minutes": 0,
+            "last_study_day": None,
+            "distraction_warnings": 0,
+            "study_hours": 0.0,
+            "xp": 0,
+            "level": 1,
+            "last_checkin": None,
+            "streak_protects": 1,
+            "protected_until": None,
+        }
         self.db.user_stats.update_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$setOnInsert": defaults},
+            upsert=True,
+        )
+        self.db.users.update_one(
             {"guild_id": guild_id, "user_id": user_id},
             {
                 "$setOnInsert": {
-                    "coins": 0,
-                    "daily_goal_hours": 2.0,
-                    "focus_mode": False,
-                    "streak": 0,
-                    "longest_streak": 0,
-                    "total_focus_minutes": 0,
-                    "total_voice_minutes": 0,
-                    "last_study_day": None,
-                    "distraction_warnings": 0,
+                    **defaults,
+                    "user_id": user_id,
                 }
             },
+            upsert=True,
+        )
+        self.db.coins.update_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$setOnInsert": {"balance": 0, "updated_at": utc_now()}},
             upsert=True,
         )
 
@@ -230,19 +255,22 @@ class Database:
         return list(self.db.plans.find({"guild_id": guild_id, "user_id": user_id}, {"_id": 0}).sort("target_date", ASCENDING))
 
     def add_progress(self, guild_id: int, user_id: int, subject: str, hours: float) -> None:
-        self.db.progress_logs.insert_one(
-            {
-                "id": self._next_id("progress_logs"),
-                "guild_id": guild_id,
-                "user_id": user_id,
-                "subject": subject,
-                "subject_key": subject.lower(),
-                "hours": hours,
-                "logged_at": utc_now(),
-            }
-        )
+        payload = {
+            "id": self._next_id("progress_logs"),
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "subject": subject,
+            "subject_key": subject.lower(),
+            "hours": hours,
+            "logged_at": utc_now(),
+        }
+        self.db.progress_logs.insert_one(payload)
+        self.db.progress.insert_one(payload)
+        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"study_hours": hours}})
+        self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"study_hours": hours}})
         self.record_study_activity(guild_id, user_id)
         self.add_coins(guild_id, user_id, int(hours * 20))
+        self.add_xp(guild_id, user_id, max(10, int(hours * 20)))
 
     def get_progress_totals(self, guild_id: int, user_id: int) -> dict:
         rows = list(
@@ -315,17 +343,41 @@ class Database:
         )
         self.ensure_user_stats(guild_id, user_id)
         if session_type == "focus":
+            hours = round(minutes / 60, 2)
+            focus_subject = subject or "focused study"
+            progress_payload = {
+                "id": self._next_id("progress_logs"),
+                "guild_id": guild_id,
+                "user_id": user_id,
+                "subject": focus_subject,
+                "subject_key": focus_subject.lower(),
+                "hours": hours,
+                "logged_at": now,
+                "source": "timer",
+            }
+            self.db.progress_logs.insert_one(progress_payload)
+            self.db.progress.insert_one(progress_payload)
             self.db.user_stats.update_one(
                 {"guild_id": guild_id, "user_id": user_id},
-                {"$inc": {"total_focus_minutes": minutes}},
+                {"$inc": {"total_focus_minutes": minutes, "study_hours": hours}},
+            )
+            self.db.users.update_one(
+                {"guild_id": guild_id, "user_id": user_id},
+                {"$inc": {"total_focus_minutes": minutes, "study_hours": hours}},
             )
             self.add_coins(guild_id, user_id, max(5, minutes // 5))
+            self.add_xp(guild_id, user_id, max(10, minutes // 2))
         self.record_study_activity(guild_id, user_id)
 
     def record_study_activity(self, guild_id: int, user_id: int) -> None:
         today = utc_now().date().isoformat()
         self.ensure_user_stats(guild_id, user_id)
         self.db.study_days.update_one(
+            {"guild_id": guild_id, "user_id": user_id, "day": today},
+            {"$setOnInsert": {"day": today}},
+            upsert=True,
+        )
+        self.db.streaks.update_one(
             {"guild_id": guild_id, "user_id": user_id, "day": today},
             {"$setOnInsert": {"day": today}},
             upsert=True,
@@ -339,15 +391,23 @@ class Database:
         )
         day_set = {datetime.fromisoformat(row["day"]).date() for row in rows}
         today = utc_now().date()
+        profile = self.get_user_stats(guild_id, user_id)
+        protected_until_raw = str(profile.get("protected_until") or "").strip()
+        protected_until = datetime.fromisoformat(protected_until_raw).date() if protected_until_raw else None
         streak = 0
         cursor_day = today if today in day_set else today - timedelta(days=1)
         if cursor_day in day_set:
             while cursor_day in day_set:
                 streak += 1
                 cursor_day -= timedelta(days=1)
-        stats = self.get_user_stats(guild_id, user_id)
-        longest = max(streak, int(stats["longest_streak"]))
+        elif protected_until is not None and protected_until >= today and profile.get("streak", 0):
+            streak = int(profile.get("streak", 0))
+        longest = max(streak, int(profile["longest_streak"]))
         self.db.user_stats.update_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$set": {"streak": streak, "longest_streak": longest, "last_study_day": today.isoformat()}},
+        )
+        self.db.users.update_one(
             {"guild_id": guild_id, "user_id": user_id},
             {"$set": {"streak": streak, "longest_streak": longest, "last_study_day": today.isoformat()}},
         )
@@ -355,15 +415,26 @@ class Database:
 
     def reset_streak(self, guild_id: int, user_id: int) -> None:
         self.ensure_user_stats(guild_id, user_id)
-        self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$set": {"streak": 0}})
+        self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$set": {"streak": 0, "protected_until": None}})
+        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$set": {"streak": 0, "protected_until": None}})
 
     def get_user_stats(self, guild_id: int, user_id: int) -> dict:
         self.ensure_user_stats(guild_id, user_id)
-        return self.db.user_stats.find_one({"guild_id": guild_id, "user_id": user_id}, {"_id": 0}) or {}
+        profile = self.db.users.find_one({"guild_id": guild_id, "user_id": user_id}, {"_id": 0}) or {}
+        legacy = self.db.user_stats.find_one({"guild_id": guild_id, "user_id": user_id}, {"_id": 0}) or {}
+        coins = self.db.coins.find_one({"guild_id": guild_id, "user_id": user_id}, {"_id": 0, "balance": 1}) or {}
+        merged = {**legacy, **profile}
+        if "balance" in coins:
+            merged["coins"] = int(coins["balance"])
+        return merged
 
     def set_goal(self, guild_id: int, user_id: int, hours_per_day: float) -> None:
         self.ensure_user_stats(guild_id, user_id)
         self.db.user_stats.update_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$set": {"daily_goal_hours": hours_per_day}},
+        )
+        self.db.users.update_one(
             {"guild_id": guild_id, "user_id": user_id},
             {"$set": {"daily_goal_hours": hours_per_day}},
         )
@@ -499,6 +570,12 @@ class Database:
     def add_coins(self, guild_id: int, user_id: int, amount: int) -> None:
         self.ensure_user_stats(guild_id, user_id)
         self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"coins": amount}})
+        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"coins": amount}})
+        self.db.coins.update_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$inc": {"balance": amount}, "$set": {"updated_at": utc_now()}},
+            upsert=True,
+        )
 
     def spend_coins(self, guild_id: int, user_id: int, amount: int) -> bool:
         self.ensure_user_stats(guild_id, user_id)
@@ -506,11 +583,17 @@ class Database:
         if int(stats["coins"]) < amount:
             return False
         self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"coins": -amount}})
+        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"coins": -amount}})
+        self.db.coins.update_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$inc": {"balance": -amount}, "$set": {"updated_at": utc_now()}},
+            upsert=True,
+        )
         return True
 
     def coin_leaderboard(self, guild_id: int, limit: int = 10) -> list[dict]:
         return list(
-            self.db.user_stats.find({"guild_id": guild_id}, {"_id": 0, "user_id": 1, "coins": 1, "total_focus_minutes": 1})
+            self.db.users.find({"guild_id": guild_id}, {"_id": 0, "user_id": 1, "coins": 1, "total_focus_minutes": 1, "level": 1})
             .sort([("coins", DESCENDING), ("total_focus_minutes", DESCENDING)])
             .limit(limit)
         )
@@ -518,10 +601,12 @@ class Database:
     def set_focus_mode(self, guild_id: int, user_id: int, enabled: bool) -> None:
         self.ensure_user_stats(guild_id, user_id)
         self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$set": {"focus_mode": enabled}})
+        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$set": {"focus_mode": enabled}})
 
     def add_distraction_warning(self, guild_id: int, user_id: int) -> None:
         self.ensure_user_stats(guild_id, user_id)
         self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"distraction_warnings": 1}})
+        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"distraction_warnings": 1}})
 
     def add_warning(self, guild_id: int, user_id: int, moderator_id: int, reason: str) -> int:
         warning_id = self._next_id("warnings")
@@ -567,6 +652,9 @@ class Database:
     def list_rooms_for_user(self, guild_id: int, user_id: int) -> list[dict]:
         return list(self.db.study_rooms.find({"guild_id": guild_id, "created_by": user_id, "active": True}, {"_id": 0}).sort("name", ASCENDING))
 
+    def is_active_room_channel(self, guild_id: int, channel_id: int) -> bool:
+        return self.db.study_rooms.find_one({"guild_id": guild_id, "channel_id": channel_id, "active": True}, {"_id": 1}) is not None
+
     def deactivate_room(self, channel_id: int) -> None:
         self.db.study_rooms.update_one({"channel_id": channel_id}, {"$set": {"active": False}})
 
@@ -601,9 +689,14 @@ class Database:
             {"guild_id": guild_id, "user_id": user_id},
             {"$inc": {"total_voice_minutes": minutes}},
         )
+        self.db.users.update_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$inc": {"total_voice_minutes": minutes}},
+        )
         if minutes > 0:
             self.record_study_activity(guild_id, user_id)
             self.add_coins(guild_id, user_id, max(3, minutes // 10))
+            self.add_xp(guild_id, user_id, max(5, minutes // 8))
         return minutes
 
     def analytics_summary(self, guild_id: int, user_id: int) -> dict[str, object]:
@@ -634,6 +727,9 @@ class Database:
             "coins": int(stats["coins"]),
             "streak": int(stats["streak"]),
             "longest_streak": int(stats["longest_streak"]),
+            "study_hours": round(float(stats.get("study_hours", 0.0)), 2),
+            "xp": int(stats.get("xp", 0)),
+            "level": int(stats.get("level", 1)),
             "daily_goal_hours": float(stats["daily_goal_hours"]),
             "today_hours": today_hours,
             "total_logged_hours": float(totals["logged_hours"]),
@@ -677,3 +773,158 @@ class Database:
 
     def get_inventory(self, guild_id: int, user_id: int) -> list[dict]:
         return list(self.db.inventory.find({"guild_id": guild_id, "user_id": user_id}, {"_id": 0}).sort("item_name", ASCENDING))
+
+    def add_xp(self, guild_id: int, user_id: int, amount: int) -> dict:
+        self.ensure_user_stats(guild_id, user_id)
+        current = self.get_user_stats(guild_id, user_id)
+        xp = int(current.get("xp", 0)) + max(0, amount)
+        level = max(1, (xp // 100) + 1)
+        payload = {"xp": xp, "level": level}
+        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$set": payload})
+        self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$set": payload})
+        return {"xp": xp, "level": level}
+
+    def daily_checkin(self, guild_id: int, user_id: int) -> dict:
+        self.ensure_user_stats(guild_id, user_id)
+        today = utc_now().date().isoformat()
+        stats = self.get_user_stats(guild_id, user_id)
+        if stats.get("last_checkin") == today:
+            return {"ok": False, "reason": "already_checked_in", "stats": stats}
+        reward = 25 + min(25, int(stats.get("streak", 0)) * 2)
+        self.record_study_activity(guild_id, user_id)
+        self.add_coins(guild_id, user_id, reward)
+        xp = self.add_xp(guild_id, user_id, 20)
+        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$set": {"last_checkin": today}})
+        self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$set": {"last_checkin": today}})
+        updated = self.refresh_streak(guild_id, user_id)
+        return {"ok": True, "reward": reward, "xp": xp, "stats": updated}
+
+    def activate_streak_protection(self, guild_id: int, user_id: int) -> dict:
+        self.ensure_user_stats(guild_id, user_id)
+        stats = self.get_user_stats(guild_id, user_id)
+        remaining = int(stats.get("streak_protects", 0))
+        if remaining <= 0:
+            return {"ok": False, "reason": "no_protects", "stats": stats}
+        protected_until = (utc_now().date() + timedelta(days=1)).isoformat()
+        updates = {"streak_protects": remaining - 1, "protected_until": protected_until}
+        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$set": updates})
+        self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$set": updates})
+        return {"ok": True, "protected_until": protected_until, "remaining": remaining - 1}
+
+    def grant_streak_protect(self, guild_id: int, user_id: int, amount: int = 1) -> None:
+        self.ensure_user_stats(guild_id, user_id)
+        amount = max(0, amount)
+        if amount <= 0:
+            return
+        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"streak_protects": amount}})
+        self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"streak_protects": amount}})
+
+    def get_dashboard_data(self, guild_id: int, user_id: int) -> dict[str, object]:
+        stats = self.get_user_stats(guild_id, user_id)
+        summary = self.analytics_summary(guild_id, user_id)
+        tasks = self.list_tasks(guild_id, user_id)[:5]
+        exams = self.list_exams(guild_id, user_id)[:5]
+        plans = self.list_plans(guild_id, user_id)[:3]
+        return {
+            "stats": stats,
+            "summary": summary,
+            "tasks": tasks,
+            "exams": exams,
+            "plans": plans,
+        }
+
+    def get_voice_stats(self, guild_id: int, user_id: int) -> dict[str, int]:
+        stats = self.get_user_stats(guild_id, user_id)
+        current = self.db.voice_sessions.find_one({"guild_id": guild_id, "user_id": user_id}, {"_id": 0, "started_at": 1})
+        current_minutes = 0
+        if current is not None:
+            current_minutes = max(0, int((utc_now() - current["started_at"]).total_seconds() // 60))
+        return {
+            "total_voice_minutes": int(stats.get("total_voice_minutes", 0)),
+            "current_session_minutes": current_minutes,
+            "total_focus_minutes": int(stats.get("total_focus_minutes", 0)),
+        }
+
+    def get_daily_graph(self, guild_id: int, user_id: int, days: int = 7) -> list[dict]:
+        since = utc_now() - timedelta(days=max(1, days - 1))
+        rows = list(
+            self.db.progress.aggregate(
+                [
+                    {"$match": {"guild_id": guild_id, "user_id": user_id, "logged_at": {"$gte": since}}},
+                    {"$addFields": {"day": {"$dateToString": {"format": "%Y-%m-%d", "date": "$logged_at", "timezone": "UTC"}}}},
+                    {"$group": {"_id": "$day", "hours": {"$sum": "$hours"}}},
+                    {"$sort": {"_id": 1}},
+                ]
+            )
+        )
+        mapped = {row["_id"]: round(float(row["hours"]), 2) for row in rows}
+        points = []
+        for offset in range(max(1, days)):
+            day = (utc_now().date() - timedelta(days=(days - 1 - offset))).isoformat()
+            points.append({"day": day, "hours": mapped.get(day, 0.0)})
+        return points
+
+    def get_subject_totals(self, guild_id: int, user_id: int) -> list[dict]:
+        rows = list(
+            self.db.progress.aggregate(
+                [
+                    {"$match": {"guild_id": guild_id, "user_id": user_id}},
+                    {"$group": {"_id": "$subject", "hours": {"$sum": "$hours"}, "last_seen": {"$max": "$logged_at"}}},
+                    {"$sort": {"hours": -1}},
+                ]
+            )
+        )
+        return [{"subject": row["_id"], "hours": round(float(row["hours"]), 2), "last_seen": row["last_seen"]} for row in rows]
+
+    def get_weak_subjects(self, guild_id: int, user_id: int, limit: int = 3) -> list[dict]:
+        subjects = self.get_subject_totals(guild_id, user_id)
+        weak = sorted(subjects, key=lambda row: (row["hours"], row["subject"]))
+        return weak[:limit]
+
+    def get_revision_topics(self, guild_id: int, user_id: int, limit: int = 5) -> list[dict]:
+        subjects = self.get_subject_totals(guild_id, user_id)
+        if not subjects:
+            return []
+        ordered = sorted(subjects, key=lambda row: row["last_seen"] or utc_now())
+        return ordered[:limit]
+
+    def _unlock_achievement(self, guild_id: int, user_id: int, key: str, name: str, description: str) -> bool:
+        result = self.db.achievements.update_one(
+            {"guild_id": guild_id, "user_id": user_id, "key": key},
+            {"$setOnInsert": {"name": name, "description": description, "unlocked_at": utc_now()}},
+            upsert=True,
+        )
+        return result.upserted_id is not None
+
+    def sync_achievements(self, guild_id: int, user_id: int) -> list[dict]:
+        stats = self.get_user_stats(guild_id, user_id)
+        unlocked: list[dict] = []
+        checks = [
+            ("first_checkin", stats.get("last_checkin") is not None, "First Check-In", "Completed your first daily check-in."),
+            ("streak_7", int(stats.get("streak", 0)) >= 7, "Streak Builder", "Reached a 7-day study streak."),
+            ("focus_100", int(stats.get("total_focus_minutes", 0)) >= 100, "Focus Rookie", "Completed 100 focus minutes."),
+            ("voice_120", int(stats.get("total_voice_minutes", 0)) >= 120, "Voice Regular", "Spent 120 minutes in study voice."),
+            ("coins_500", int(stats.get("coins", 0)) >= 500, "Coin Collector", "Saved 500 study coins."),
+            ("level_5", int(stats.get("level", 1)) >= 5, "Level Climber", "Reached level 5."),
+        ]
+        if len(self.list_tasks(guild_id, user_id)) >= 1:
+            checks.append(("task_starter", True, "Task Starter", "Created your first study task."))
+        if len(self.list_notes(guild_id, user_id)) >= 1:
+            checks.append(("note_keeper", True, "Note Keeper", "Saved your first study note."))
+        if len(self.list_exams(guild_id, user_id)) >= 1:
+            checks.append(("exam_planner", True, "Exam Planner", "Added your first exam."))
+        for key, condition, name, description in checks:
+            if not condition:
+                continue
+            if self._unlock_achievement(guild_id, user_id, key, name, description):
+                unlocked.append({"key": key, "name": name, "description": description})
+        return unlocked
+
+    def list_achievements(self, guild_id: int, user_id: int) -> list[dict]:
+        return list(self.db.achievements.find({"guild_id": guild_id, "user_id": user_id}, {"_id": 0}).sort("unlocked_at", DESCENDING))
+
+    def get_daily_report_candidates(self, guild_id: int) -> list[dict]:
+        return list(self.db.users.find({"guild_id": guild_id}, {"_id": 0, "user_id": 1, "last_report_day": 1, "last_study_day": 1}))
+
+    def mark_daily_report_sent(self, guild_id: int, user_id: int, day: str) -> None:
+        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$set": {"last_report_day": day}})

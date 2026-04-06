@@ -14,6 +14,9 @@ from bot.logging_setup import configure_logging
 from bot.ui import INFO, SUCCESS, WARNING, make_embed, reply_embed, reply_to_message
 
 log = logging.getLogger(__name__)
+CAMERA_WARNING_CHANNEL_ID = 1490599054479196313
+CAMERA_WARNING_DELAY = timedelta(minutes=2)
+CAMERA_KICK_DELAY = timedelta(minutes=4)
 
 
 @dataclass(slots=True)
@@ -25,6 +28,15 @@ class StudyTimer:
     minutes: int
     session_type: str
     ends_at: datetime
+
+
+@dataclass(slots=True)
+class CameraWatch:
+    guild_id: int
+    user_id: int
+    channel_id: int
+    started_at: datetime
+    warned_at: datetime | None = None
 
 
 class StudyBot(commands.Bot):
@@ -48,6 +60,7 @@ class StudyBot(commands.Bot):
         self.active_timers: dict[tuple[int, int], StudyTimer] = {}
         self.quiz_sessions: dict[tuple[int, int], dict[str, object]] = {}
         self.distraction_cooldowns: dict[tuple[int, int], datetime] = {}
+        self.camera_watches: dict[tuple[int, int], CameraWatch] = {}
         self._synced_guilds: set[int] = set()
         self.add_check(self._guild_only_check)
 
@@ -59,8 +72,14 @@ class StudyBot(commands.Bot):
     async def setup_hook(self) -> None:
         for extension in (
             "bot.cogs.meta",
+            "bot.cogs.task",
             "bot.cogs.study",
+            "bot.cogs.notes",
+            "bot.cogs.progress",
             "bot.cogs.learning",
+            "bot.cogs.ai",
+            "bot.cogs.analytics",
+            "bot.cogs.gamification",
             "bot.cogs.community",
             "bot.cogs.utility",
             "bot.cogs.moderation",
@@ -69,6 +88,8 @@ class StudyBot(commands.Bot):
         self.reminder_worker.start()
         self.timer_worker.start()
         self.weekly_reward_worker.start()
+        self.camera_enforcement_worker.start()
+        self.daily_report_worker.start()
         log.info("Loaded study bot extensions")
 
     async def on_ready(self) -> None:
@@ -131,15 +152,30 @@ class StudyBot(commands.Bot):
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
         if member.bot or member.guild is None:
             return
+        key = (member.guild.id, member.id)
         if before.channel is None and after.channel is not None:
             self.db.start_voice_session(member.guild.id, member.id, after.channel.id)
-            return
-        if before.channel is not None and after.channel is None:
+        elif before.channel is not None and after.channel is None:
             self.db.stop_voice_session(member.guild.id, member.id)
-            return
-        if before.channel is not None and after.channel is not None and before.channel.id != after.channel.id:
+        elif before.channel is not None and after.channel is not None and before.channel.id != after.channel.id:
             self.db.stop_voice_session(member.guild.id, member.id)
             self.db.start_voice_session(member.guild.id, member.id, after.channel.id)
+        if (
+            after.channel is None
+            or not isinstance(after.channel, discord.VoiceChannel)
+            or self.db.is_active_room_channel(member.guild.id, after.channel.id)
+            or after.self_video
+        ):
+            self.camera_watches.pop(key, None)
+            return
+        current = self.camera_watches.get(key)
+        if current is None or current.channel_id != after.channel.id or before.self_video:
+            self.camera_watches[key] = CameraWatch(
+                guild_id=member.guild.id,
+                user_id=member.id,
+                channel_id=after.channel.id,
+                started_at=datetime.now(UTC),
+            )
 
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
         if isinstance(channel, discord.VoiceChannel):
@@ -183,6 +219,27 @@ class StudyBot(commands.Bot):
         except discord.HTTPException:
             return
 
+    async def send_camera_notice(self, *, member: discord.Member, channel: discord.VoiceChannel, title: str, description: str, color: discord.Color) -> None:
+        warning_channel = member.guild.get_channel(CAMERA_WARNING_CHANNEL_ID)
+        if warning_channel is None or not hasattr(warning_channel, "send"):
+            return
+        embed = make_embed(user=member, title=title, description=description, color=color)
+        try:
+            await warning_channel.send(content=f"{member.mention} {channel.mention}", embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+        except discord.HTTPException:
+            return
+
+    async def send_daily_report(self, *, guild: discord.Guild, user_id: int) -> None:
+        summary = self.db.analytics_summary(guild.id, user_id)
+        description = (
+            f"Study hours: `{summary['study_hours']}`\n"
+            f"Today vs goal: `{summary['today_hours']}` / `{summary['daily_goal_hours']}`\n"
+            f"Streak: `{summary['streak']}` days\n"
+            f"Focus minutes: `{summary['focus_minutes']}`\n"
+            f"Voice minutes: `{summary['voice_minutes']}`"
+        )
+        await self.send_dm_embed(user_id=user_id, title="Daily Study Report", description=description, color=INFO)
+
     @tasks.loop(seconds=15)
     async def reminder_worker(self) -> None:
         if not self.is_ready():
@@ -219,6 +276,77 @@ class StudyBot(commands.Bot):
                 self.db.add_coins(guild.id, user_id, 100)
             self.db.mark_weekly_rewards(guild.id, week_key, rewarded_user_ids)
 
+    @tasks.loop(hours=1)
+    async def daily_report_worker(self) -> None:
+        if not self.is_ready():
+            return
+        now = datetime.now(UTC)
+        if now.hour < 20:
+            return
+        today = now.date().isoformat()
+        for guild in self.guilds:
+            for row in self.db.get_daily_report_candidates(guild.id):
+                if row.get("last_study_day") != today or row.get("last_report_day") == today:
+                    continue
+                await self.send_daily_report(guild=guild, user_id=row["user_id"])
+                self.db.mark_daily_report_sent(guild.id, row["user_id"], today)
+
+    @tasks.loop(seconds=20)
+    async def camera_enforcement_worker(self) -> None:
+        if not self.is_ready():
+            return
+        now = datetime.now(UTC)
+        active_keys: set[tuple[int, int]] = set()
+        for guild in self.guilds:
+            for channel in guild.voice_channels:
+                if self.db.is_active_room_channel(guild.id, channel.id):
+                    continue
+                for member in channel.members:
+                    if member.bot:
+                        continue
+                    if member.voice is not None and member.voice.self_video:
+                        self.camera_watches.pop((guild.id, member.id), None)
+                        continue
+                    key = (guild.id, member.id)
+                    active_keys.add(key)
+                    watch = self.camera_watches.get(key)
+                    if watch is None or watch.channel_id != channel.id:
+                        watch = CameraWatch(
+                            guild_id=guild.id,
+                            user_id=member.id,
+                            channel_id=channel.id,
+                            started_at=now,
+                        )
+                        self.camera_watches[key] = watch
+                    if watch.warned_at is None and now - watch.started_at >= CAMERA_WARNING_DELAY:
+                        await self.send_camera_notice(
+                            member=member,
+                            channel=channel,
+                            title="Camera Required",
+                            description="Please turn on your camera within 2 minutes or you will be removed from the voice channel.",
+                            color=WARNING,
+                        )
+                        watch.warned_at = now
+                        continue
+                    if watch.warned_at is not None and now - watch.started_at >= CAMERA_KICK_DELAY:
+                        removed = False
+                        try:
+                            await member.move_to(None, reason="Camera required in monitored voice channels.")
+                            removed = True
+                        except discord.HTTPException:
+                            removed = False
+                        await self.send_camera_notice(
+                            member=member,
+                            channel=channel,
+                            title="Voice Channel Removal" if removed else "Camera Enforcement Failed",
+                            description="You were removed for keeping your camera off for over 4 minutes." if removed else "Camera stayed off for over 4 minutes, but I could not disconnect you. Check bot permissions and role hierarchy.",
+                            color=WARNING,
+                        )
+                        self.camera_watches.pop(key, None)
+        for key in list(self.camera_watches):
+            if key not in active_keys:
+                self.camera_watches.pop(key, None)
+
     @tasks.loop(seconds=10)
     async def timer_worker(self) -> None:
         if not self.is_ready():
@@ -251,6 +379,8 @@ class StudyBot(commands.Bot):
     @reminder_worker.before_loop
     @timer_worker.before_loop
     @weekly_reward_worker.before_loop
+    @camera_enforcement_worker.before_loop
+    @daily_report_worker.before_loop
     async def before_background_workers(self) -> None:
         await self.wait_until_ready()
 
