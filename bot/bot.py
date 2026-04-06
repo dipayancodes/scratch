@@ -102,11 +102,13 @@ class StudyBot(commands.Bot):
             await self.tree.sync(guild=guild)
             self._synced_guilds.add(guild.id)
         log.info(
-            "Ready as %s (%s) | prefix=%s | mongo_db=%s",
+            "Ready as %s (%s) | prefix=%s | mongo_db=%s | ai_enabled=%s | ai_status=%s",
             self.user,
             self.user.id if self.user else "unknown",
             self.settings.prefix,
             self.settings.mongodb_database,
+            self.ai.enabled,
+            getattr(self.ai, "status_reason", "unknown"),
         )
 
     async def on_message(self, message: discord.Message) -> None:

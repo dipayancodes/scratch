@@ -15,6 +15,7 @@ class StudyAI:
         self.api_key = api_key
         self.model = model
         self.client = None
+        self.status_reason = "missing_key" if not api_key else "ready"
         if api_key:
             try:
                 from groq import AsyncGroq
@@ -22,6 +23,7 @@ class StudyAI:
                 self.client = AsyncGroq(api_key=api_key)
             except Exception:
                 self.client = None
+                self.status_reason = "missing_dependency"
 
     @property
     def enabled(self) -> bool:
@@ -37,8 +39,11 @@ class StudyAI:
                 return result
             if error == "auth":
                 return self._auth_error_message()
+            if error == "transport":
+                return self._transport_error_message()
         return (
-            "AI is not available right now, so here is a study-first fallback:\n"
+            f"{self._unavailable_message()}\n\n"
+            "Fallback study guide:\n"
             f"1. Restate the topic: {question}\n"
             "2. Break it into definition, rule or formula, example, and common mistake.\n"
             "3. Turn the answer into 3 flashcards after you understand it."
@@ -55,6 +60,8 @@ class StudyAI:
                 return result
             if error == "auth":
                 return self._auth_error_message()
+            if error == "transport":
+                return self._transport_error_message()
 
         sentences = re.split(r"(?<=[.!?])\s+", text)
         summary = sentences[:3]
@@ -78,6 +85,8 @@ class StudyAI:
                 return result
             if error == "auth":
                 return self._auth_error_message()
+            if error == "transport":
+                return self._transport_error_message()
         keywords = self._keywords(text)
         lines = text.splitlines()
         useful_lines = [line.strip() for line in lines if line.strip()][:5]
@@ -101,6 +110,8 @@ class StudyAI:
                 return result
             if error == "auth":
                 return self._auth_error_message()
+            if error == "transport":
+                return self._transport_error_message()
 
         lines = [f"Study plan for {exam} ({days} days):"]
         for day in range(1, days + 1):
@@ -135,13 +146,23 @@ class StudyAI:
             class_name = exc.__class__.__name__.lower()
             if status_code == 401 or "auth" in class_name:
                 return None, "auth"
-            return None, "other"
+            return None, "transport"
 
     def _auth_error_message(self) -> str:
         return (
             "Groq authentication failed. Your `GROQ_API_KEY` in `.env` is missing, invalid, or expired.\n"
             "Update the key, save `.env`, and restart the bot."
         )
+
+    def _transport_error_message(self) -> str:
+        return "Groq is configured, but the API request failed. Check network access, deployment secrets, and the selected model."
+
+    def _unavailable_message(self) -> str:
+        if self.status_reason == "missing_dependency":
+            return "Groq is configured in code, but the `groq` Python package is not installed in this runtime."
+        if self.status_reason == "missing_key":
+            return "Groq is not configured because `GROQ_API_KEY` is missing from the environment."
+        return "Groq AI is unavailable right now."
 
     def _keywords(self, text: str) -> list[str]:
         words = re.findall(r"[A-Za-z]{4,}", text.lower())
