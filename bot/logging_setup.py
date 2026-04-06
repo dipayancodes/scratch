@@ -8,4 +8,4 @@ def configure_logging(level: str) -> None:
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("openai").setLevel(logging.WARNING)
+    logging.getLogger("groq").setLevel(logging.WARNING)

@@ -56,7 +56,7 @@ class StudyBot(commands.Bot):
         )
         self.settings = settings
         self.db = db
-        self.ai = StudyAI(settings.openai_api_key, settings.openai_model)
+        self.ai = StudyAI(settings.groq_api_key, settings.groq_model)
         self.active_timers: dict[tuple[int, int], StudyTimer] = {}
         self.quiz_sessions: dict[tuple[int, int], dict[str, object]] = {}
         self.distraction_cooldowns: dict[tuple[int, int], datetime] = {}

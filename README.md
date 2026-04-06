@@ -8,7 +8,7 @@ Study OS is a Discord productivity assistant for study-focused servers. It uses 
 - Every command replies to the triggering message
 - Every response uses an embed
 - Storage uses MongoDB
-- AI commands support OpenAI when configured and fallback behavior when not configured
+- AI commands support Groq when configured and fallback behavior when not configured
 
 ## Main systems
 
@@ -69,7 +69,7 @@ pip install -r requirements.txt
 3. Copy `.env.example` to `.env`
 4. Set `DISCORD_TOKEN`
 5. Set `MONGODB_URI` if you are not using local MongoDB
-6. Optionally set `OPENAI_API_KEY`
+6. Optionally set `GROQ_API_KEY`
 7. Run:
 
 ```powershell
@@ -80,4 +80,4 @@ python main.py
 
 - Prefix commands require the `MESSAGE CONTENT INTENT` to be enabled in the Discord Developer Portal.
 - Voice tracking requires the bot to have permission to view and connect to voice channels.
-- AI commands work without OpenAI, but answers will be simpler.
+- AI commands work without Groq, but answers will be simpler.
