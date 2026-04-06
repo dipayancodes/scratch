@@ -655,6 +655,10 @@ class Database:
     def is_active_room_channel(self, guild_id: int, channel_id: int) -> bool:
         return self.db.study_rooms.find_one({"guild_id": guild_id, "channel_id": channel_id, "active": True}, {"_id": 1}) is not None
 
+    def get_active_room_channel_ids(self, guild_id: int) -> set[int]:
+        rows = self.db.study_rooms.find({"guild_id": guild_id, "active": True}, {"_id": 0, "channel_id": 1})
+        return {int(row["channel_id"]) for row in rows if row.get("channel_id") is not None}
+
     def deactivate_room(self, channel_id: int) -> None:
         self.db.study_rooms.update_one({"channel_id": channel_id}, {"$set": {"active": False}})
 
