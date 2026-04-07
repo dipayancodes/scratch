@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
+import logging
 import re
 
+
+log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "You are a concise study assistant for students. "
     "Explain clearly, stay practical, and structure answers so they help revision and retention."
+)
+LANGUAGE_MODERATION_PROMPT = (
+    "You are classifying one Discord message for English-only moderation.\n"
+    "Return exactly one lowercase label: english or non-english.\n"
+    "Classify as english when the user is trying to communicate in English, even if the message has slang, typos, short greetings, casual spelling, abbreviations, or imperfect grammar.\n"
+    "Classify as non-english when the message is mainly in another language, a romanized foreign language, or a mixed-language sentence whose intent is not English.\n"
+    "Treat pure English reporting statements such as name said \"...\" or teacher: \"...\" as english.\n"
+    "Do not explain your answer."
 )
 
 
@@ -16,6 +28,7 @@ class StudyAI:
         self.model = model
         self.client = None
         self.status_reason = "missing_key" if not api_key else "ready"
+        self._request_semaphore = asyncio.Semaphore(3)
         if api_key:
             try:
                 from groq import AsyncGroq
@@ -124,20 +137,67 @@ class StudyAI:
             lines.append(f"- Day {day}: {phase}")
         return "\n".join(lines)
 
+    async def classify_language(self, text: str) -> str | None:
+        text = (text or "").strip()
+        if not text:
+            return "english"
+        if not self.enabled:
+            log.warning("Skipped Groq language moderation because AI is unavailable: %s", self.status_reason)
+            return None
+        result, error = await self._create_completion(
+            system_prompt=LANGUAGE_MODERATION_PROMPT,
+            prompt=f"Classify this message:\n{text}",
+            temperature=0.0,
+            max_tokens=8,
+            top_p=1.0,
+        )
+        if result:
+            lowered = result.strip().lower()
+            compact = re.sub(r"[^a-z-]", "", lowered)
+            if "non-english" in lowered or compact == "nonenglish":
+                return "non-english"
+            if compact == "english":
+                return "english"
+            log.warning("Unexpected Groq language moderation response: %r", result)
+            return None
+        if error == "auth":
+            log.warning("Skipped Groq language moderation because authentication failed.")
+            return None
+        log.warning("Skipped Groq language moderation because the API request failed.")
+        return None
+
     async def _call_groq(self, prompt: str) -> tuple[str | None, str | None]:
+        return await self._create_completion(
+            system_prompt=SYSTEM_PROMPT,
+            prompt=prompt,
+            temperature=0.4,
+            max_tokens=1400,
+            top_p=0.9,
+        )
+
+    async def _create_completion(
+        self,
+        *,
+        system_prompt: str,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+        top_p: float,
+    ) -> tuple[str | None, str | None]:
         if not self.enabled:
             return None, None
         try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.4,
-                max_tokens=1400,
-                top_p=0.9,
-            )
+            async with self._request_semaphore:
+                response = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    top_p=top_p,
+                )
             content = response.choices[0].message.content if response.choices else ""
             clean = (content or "").strip()
             return (clean or "I could not generate a complete response for that request."), None

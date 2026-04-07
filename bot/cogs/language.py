@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import re
 from datetime import timedelta
+import logging
+import re
 
 import discord
 from discord.ext import commands, tasks
-from wordfreq import top_n_list
 
 from bot.ui import ERROR, WARNING, make_embed
 
+
+log = logging.getLogger(__name__)
 
 EXCLUDED_CHANNEL_IDS = {
     1453299769916129350,
@@ -16,138 +18,18 @@ EXCLUDED_CHANNEL_IDS = {
     1453299960387731477,
     1490777438215733358,
 }
-NON_ENGLISH_WORDS = {
-    "acha",
-    "achi",
-    "ami",
-    "bhalo",
-    "bhai",
-    "hai",
-    "kal",
-    "korbo",
-    "kya",
-    "mera",
-    "nahi",
-    "tera",
-    "tum",
-    "tumi",
-}
-ENGLISH_EXTRA_WORDS = {
-    "afk",
-    "alr",
-    "alright",
-    "bcuz",
-    "bcz",
-    "bro",
-    "bruh",
-    "coz",
-    "cya",
-    "dm",
-    "dont",
-    "fr",
-    "gud",
-    "helo",
-    "hey",
-    "hi",
-    "hii",
-    "hlo",
-    "idk",
-    "im",
-    "ive",
-    "lemme",
-    "lol",
-    "lmao",
-    "msg",
-    "mrng",
-    "nah",
-    "ngl",
-    "nope",
-    "ok",
-    "okay",
-    "omg",
-    "pls",
-    "plz",
-    "rn",
-    "sup",
-    "thx",
-    "ty",
-    "u",
-    "ur",
-    "wanna",
-    "wassup",
-    "wsp",
-    "ya",
-    "yo",
-    "youre",
-}
-ENGLISH_WORDS = set(top_n_list("en", 50000)) | ENGLISH_EXTRA_WORDS
-ALLOWED_CHARS_PATTERN = re.compile(r"^[A-Za-z0-9\s.,!?;:'\"()\[\]{}\-_/@#$%^&*+=<>|`~\\]*$")
 REPORTING_PATTERN = re.compile(r"\b\w+\s+(said|told|mentioned|wrote|replied|asked)\b", re.IGNORECASE)
 SPEAKER_PATTERN = re.compile(r"^\s*\w+\s*:", re.IGNORECASE)
-URL_PATTERN = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
-WORD_PATTERN = re.compile(r"[a-z0-9]+")
 LANGUAGE_MUTE_DURATION = timedelta(hours=2)
 LANGUAGE_WARNING_DECAY_HOURS = 24
-
-
-def normalize(text: str) -> str:
-    text = (text or "").lower()
-    text = URL_PATTERN.sub(" ", text)
-    text = re.sub(r"(?<=[a-z0-9])[^a-z0-9\s]+(?=[a-z0-9])", "", text)
-    text = re.sub(r"[^a-z0-9\s]", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def is_english_word(word: str) -> bool:
-    if not word:
-        return False
-    if word.isdigit():
-        return True
-    if word in NON_ENGLISH_WORDS:
-        return False
-    return word in ENGLISH_WORDS
-
-
-def contains_non_english_phrase(words: list[str]) -> bool:
-    if not words:
-        return False
-    if len(words) == 1:
-        return not is_english_word(words[0])
-    streak = 0
-    for word in words:
-        if is_english_word(word):
-            streak = 0
-            continue
-        streak += 1
-        if streak >= 2:
-            return True
-    return False
+LANGUAGE_BAN_REASON = "Using non-English language in English-only channels"
 
 
 def is_reporting_sentence(text: str) -> bool:
+    text = (text or "").strip()
     if not text:
         return False
     return bool(REPORTING_PATTERN.search(text) or SPEAKER_PATTERN.search(text))
-
-
-def should_warn(text: str) -> bool:
-    if not text:
-        return False
-    if is_reporting_sentence(text):
-        return False
-    if not ALLOWED_CHARS_PATTERN.fullmatch(text):
-        return True
-    normalized = normalize(text)
-    if not normalized:
-        return False
-    words = WORD_PATTERN.findall(normalized)
-    if not words:
-        return False
-    if contains_non_english_phrase(words):
-        return True
-    valid_words = sum(1 for word in words if is_english_word(word))
-    invalid_words = len(words) - valid_words
-    return invalid_words > valid_words
 
 
 class LanguageEnforcer(commands.Cog):
@@ -181,12 +63,28 @@ class LanguageEnforcer(commands.Cog):
             return False
         if is_reporting_sentence(content):
             return False
-        if not should_warn(content):
+
+        decision = await self.bot.ai.classify_language(content)
+        if decision is None:
+            log.warning(
+                "Skipped language moderation because Groq classification was unavailable | guild=%s channel=%s user=%s message=%s",
+                message.guild.id,
+                message.channel.id,
+                message.author.id,
+                message.id,
+            )
+            return False
+        if decision == "english":
             return False
 
         member = message.author if isinstance(message.author, discord.Member) else message.guild.get_member(message.author.id)
         if member is None:
             return False
+
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
 
         counts = await self._db_call(
             self.bot.db.add_language_warning,
@@ -197,8 +95,8 @@ class LanguageEnforcer(commands.Cog):
         )
         warning_count = int(counts.get("warning_count", 1))
         mute_count = int(counts.get("mute_count", 0))
-        action_text = f"Warning issued. It will expire after {LANGUAGE_WARNING_DECAY_HOURS} hours without another violation."
         color = WARNING
+        action_text = f"Warning {warning_count}/3. This warning will clear after {LANGUAGE_WARNING_DECAY_HOURS} hours if you stay compliant."
 
         if warning_count > 3:
             counts = await self._db_call(
@@ -212,49 +110,81 @@ class LanguageEnforcer(commands.Cog):
             mute_count = int(counts.get("mute_count", mute_count + 1))
             if mute_count >= 3:
                 try:
-                    await member.ban(reason="Using non-English language repeatedly")
-                    action_text = "Banned for repeated non-English messages."
+                    await member.ban(reason=LANGUAGE_BAN_REASON)
                     color = ERROR
+                    action_text = "You have been banned for repeated non-English messages in English-only channels."
+                    log.warning(
+                        "Language moderation ban | guild=%s user=%s mute_count=%s message=%s",
+                        message.guild.id,
+                        member.id,
+                        mute_count,
+                        message.id,
+                    )
                 except discord.HTTPException:
-                    action_text = "Ban threshold reached, but I could not ban the user."
                     color = ERROR
+                    action_text = "Ban threshold reached, but I could not ban you because of missing permissions or role hierarchy."
+                    log.warning(
+                        "Language moderation ban failed | guild=%s user=%s mute_count=%s message=%s",
+                        message.guild.id,
+                        member.id,
+                        mute_count,
+                        message.id,
+                    )
             else:
                 try:
-                    await member.timeout(
-                        discord.utils.utcnow() + LANGUAGE_MUTE_DURATION,
-                        reason="Using non-English language repeatedly",
+                    await member.timeout(discord.utils.utcnow() + LANGUAGE_MUTE_DURATION, reason=LANGUAGE_BAN_REASON)
+                    action_text = f"You have been muted for {int(LANGUAGE_MUTE_DURATION.total_seconds() // 3600)} hours."
+                    log.warning(
+                        "Language moderation mute | guild=%s user=%s mute_count=%s message=%s",
+                        message.guild.id,
+                        member.id,
+                        mute_count,
+                        message.id,
                     )
-                    action_text = "Timed out for 2 hours."
                 except discord.HTTPException:
-                    action_text = "Mute threshold reached, but I could not timeout the user."
+                    action_text = "Mute threshold reached, but I could not mute you because of missing permissions or role hierarchy."
+                    log.warning(
+                        "Language moderation mute failed | guild=%s user=%s mute_count=%s message=%s",
+                        message.guild.id,
+                        member.id,
+                        mute_count,
+                        message.id,
+                    )
+        else:
+            log.info(
+                "Language moderation warning | guild=%s user=%s warning_count=%s message=%s",
+                message.guild.id,
+                member.id,
+                warning_count,
+                message.id,
+            )
 
         embed = make_embed(
             user=member,
             title="⚠️ English Only",
-            description="Please communicate in English so everyone can understand.",
+            description="Your message was removed because English is required in this channel.",
             color=color,
             fields=[
-                ("Warnings", str(warning_count), True),
+                ("Warnings", f"{warning_count}/3", True),
+                ("Mute Count", str(mute_count), True),
                 ("Action", action_text, False),
             ],
         )
         try:
-            await message.reply(content=member.mention, embed=embed, mention_author=False)
+            await member.send(embed=embed)
         except discord.HTTPException:
-            pass
-        try:
-            await message.delete()
-        except discord.HTTPException:
-            pass
+            log.info("Could not DM language moderation notice | guild=%s user=%s", message.guild.id, member.id)
         return True
 
     @tasks.loop(hours=1)
     async def warning_decay_worker(self) -> None:
-        await self._db_call(
+        cleared = await self._db_call(
             self.bot.db.clear_expired_language_warnings,
             default=0,
             operation="clear_expired_language_warnings",
         )
+        if cleared:
+            log.info("Cleared %s expired language warnings.", cleared)
 
     @warning_decay_worker.before_loop
     async def before_warning_decay_worker(self) -> None:

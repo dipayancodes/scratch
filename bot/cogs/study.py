@@ -121,7 +121,7 @@ class Study(commands.Cog):
             return
         await reply_embed(ctx, title=f"Today's Plan: {plan['day'].title()} {plan['target_date']}", description=plan["tasks"][:3500], color=INFO)
 
-    @plan.command(name="smart", description="Generate a smart AI study plan for an exam.")
+    @plan.command(name="smart", aliases=["generate"], description="Generate a smart AI study plan for an exam.")
     async def plan_smart(self, ctx: commands.Context, exam: str, days: int) -> None:
         if getattr(ctx, "interaction", None) is not None and not ctx.interaction.response.is_done():
             await ctx.defer()

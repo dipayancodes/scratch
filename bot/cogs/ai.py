@@ -40,6 +40,8 @@ class AITools(commands.Cog):
 
     @commands.hybrid_command(name="suggest", description="Get a suggestion for what to study next.")
     async def suggest(self, ctx: commands.Context) -> None:
+        if getattr(ctx, "interaction", None) is not None and not ctx.interaction.response.is_done():
+            await ctx.defer()
         weak = self.bot.db.get_weak_subjects(ctx.guild.id, ctx.author.id, limit=3)
         exams = self.bot.db.list_exams(ctx.guild.id, ctx.author.id)[:3]
         question = "Suggest what I should study next."
@@ -61,6 +63,8 @@ class AITools(commands.Cog):
 
     @commands.hybrid_command(name="revise", description="Suggest revision topics based on your history.")
     async def revise(self, ctx: commands.Context) -> None:
+        if getattr(ctx, "interaction", None) is not None and not ctx.interaction.response.is_done():
+            await ctx.defer()
         topics = self.bot.db.get_revision_topics(ctx.guild.id, ctx.author.id, limit=5)
         if not topics:
             await reply_embed(ctx, title="No Revision Data Yet", description="Log some subject progress first and I will suggest revision topics.", color=INFO)
