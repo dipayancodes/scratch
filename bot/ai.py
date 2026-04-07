@@ -7,6 +7,11 @@ import re
 
 
 log = logging.getLogger(__name__)
+FALLBACK_MODELS = (
+    "llama3-8b-8192",
+    "llama-3.1-8b-instant",
+    "llama-3.1-70b-versatile",
+)
 
 SYSTEM_PROMPT = (
     "You are a concise study assistant for students. "
@@ -27,6 +32,8 @@ class StudyAI:
         self.api_key = api_key
         self.model = model
         self.client = None
+        self.last_error: str | None = None
+        self.last_model: str | None = None
         self.status_reason = "missing_key" if not api_key else "ready"
         self._request_semaphore = asyncio.Semaphore(3)
         if api_key:
@@ -186,27 +193,41 @@ class StudyAI:
     ) -> tuple[str | None, str | None]:
         if not self.enabled:
             return None, None
-        try:
-            async with self._request_semaphore:
-                response = await self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    top_p=top_p,
-                )
-            content = response.choices[0].message.content if response.choices else ""
-            clean = (content or "").strip()
-            return (clean or "I could not generate a complete response for that request."), None
-        except Exception as exc:
-            status_code = getattr(exc, "status_code", None)
-            class_name = exc.__class__.__name__.lower()
-            if status_code == 401 or "auth" in class_name:
-                return None, "auth"
-            return None, "transport"
+        candidate_models = [self.model, *[model for model in FALLBACK_MODELS if model != self.model]]
+        self.last_error = None
+        for model_name in candidate_models:
+            self.last_model = model_name
+            try:
+                async with self._request_semaphore:
+                    response = await self.client.chat.completions.create(
+                        model=model_name,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        top_p=top_p,
+                    )
+                content = response.choices[0].message.content if response.choices else ""
+                clean = (content or "").strip()
+                if model_name != self.model:
+                    log.warning("Groq request used fallback model %s instead of configured model %s.", model_name, self.model)
+                return (clean or "I could not generate a complete response for that request."), None
+            except Exception as exc:
+                status_code = getattr(exc, "status_code", None)
+                class_name = exc.__class__.__name__.lower()
+                message = f"{exc.__class__.__name__}: {exc}"
+                self.last_error = message
+                if status_code == 401 or "auth" in class_name:
+                    return None, "auth"
+                lowered = str(exc).lower()
+                if status_code in {400, 404} or "model" in lowered or "decommissioned" in lowered or "not found" in lowered:
+                    log.warning("Groq model %s failed: %s", model_name, message)
+                    continue
+                log.warning("Groq request failed with model %s: %s", model_name, message)
+                return None, "transport"
+        return None, "transport"
 
     def _auth_error_message(self) -> str:
         return (
@@ -215,7 +236,9 @@ class StudyAI:
         )
 
     def _transport_error_message(self) -> str:
-        return "Groq is configured, but the API request failed. Check network access, deployment secrets, and the selected model."
+        detail = f" Last error: {self.last_error}" if self.last_error else ""
+        model = f" Model: {self.last_model or self.model}." if (self.last_model or self.model) else ""
+        return f"Groq is configured, but the API request failed.{model} Check network access, deployment secrets, and the selected model.{detail}"
 
     def _unavailable_message(self) -> str:
         if self.status_reason == "missing_dependency":
