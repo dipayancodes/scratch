@@ -52,9 +52,18 @@ async def reply_embed(
         mention = ctx.author.mention if getattr(ctx, "author", None) is not None else ""
         allowed = discord.AllowedMentions(users=True)
         if not interaction.response.is_done():
-            await interaction.response.send_message(content=mention, embed=embed, allowed_mentions=allowed)
-            return await interaction.original_response()
-        return await interaction.followup.send(content=mention, embed=embed, wait=True, allowed_mentions=allowed)
+            try:
+                await interaction.response.send_message(content=mention, embed=embed, allowed_mentions=allowed)
+                return await interaction.original_response()
+            except discord.NotFound:
+                pass
+        try:
+            return await interaction.followup.send(content=mention, embed=embed, wait=True, allowed_mentions=allowed)
+        except discord.NotFound:
+            channel = getattr(ctx, "channel", None)
+            if channel is not None and hasattr(channel, "send"):
+                return await channel.send(content=mention, embed=embed, allowed_mentions=allowed)
+            raise
     # For message-based invocation, include the author's mention in the content so they get pinged
     return await ctx.reply(content=ctx.author.mention, embed=embed, mention_author=False)
 

@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import logging
+import re
 
 import discord
 from discord.ext import commands, tasks
@@ -19,6 +20,35 @@ log = logging.getLogger(__name__)
 CAMERA_WARNING_CHANNEL_ID = 1490599054479196313
 CAMERA_WARNING_DELAY = timedelta(minutes=2)
 CAMERA_KICK_DELAY = timedelta(minutes=4)
+AUTOMOD_TIMEOUT = timedelta(hours=1)
+AUTOMOD_BAN_THRESHOLD = 3
+AUTOMOD_SPAM_WINDOW = timedelta(seconds=8)
+AUTOMOD_SPAM_THRESHOLD = 6
+AUTOMOD_EXPLICIT_WORDS = {
+    "bitch",
+    "cock",
+    "cunt",
+    "dick",
+    "fuck",
+    "motherfucker",
+    "nigger",
+    "porn",
+    "pornography",
+    "pussy",
+    "retard",
+    "slut",
+    "whore",
+}
+AUTOMOD_ILLEGAL_LINK_MARKERS = (
+    "pornhub.",
+    "xvideos.",
+    "xnxx.",
+    "redtube.",
+    "xhamster.",
+    "hentai",
+    "rule34",
+    "nhentai",
+)
 
 
 @dataclass(slots=True)
@@ -63,13 +93,24 @@ class StudyBot(commands.Bot):
         self.quiz_sessions: dict[tuple[int, int], dict[str, object]] = {}
         self.distraction_cooldowns: dict[tuple[int, int], datetime] = {}
         self.camera_watches: dict[tuple[int, int], CameraWatch] = {}
+        self.message_spam_history: dict[tuple[int, int], list[datetime]] = {}
         self._synced_guilds: set[int] = set()
         self.add_check(self._guild_only_check)
+        self.before_invoke(self._maybe_defer_interaction)
 
     async def _guild_only_check(self, ctx: commands.Context) -> bool:
         if ctx.guild is None:
             raise commands.NoPrivateMessage("This bot only works inside study servers.")
         return True
+
+    async def _maybe_defer_interaction(self, ctx: commands.Context) -> None:
+        interaction = getattr(ctx, "interaction", None)
+        if interaction is None or interaction.response.is_done():
+            return
+        try:
+            await interaction.response.defer(thinking=True)
+        except (discord.HTTPException, discord.InteractionResponded):
+            return
 
     async def setup_hook(self) -> None:
         for extension in (
@@ -83,6 +124,7 @@ class StudyBot(commands.Bot):
             "bot.cogs.analytics",
             "bot.cogs.gamification",
             "bot.cogs.community",
+            "bot.cogs.reports",
             "bot.cogs.utility",
             "bot.cogs.moderation",
         ):
@@ -113,6 +155,8 @@ class StudyBot(commands.Bot):
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.guild is None:
+            return
+        if await self.handle_automod(message):
             return
 
         stats = await self._db_call(
@@ -147,6 +191,70 @@ class StudyBot(commands.Bot):
                     )
 
         await self.process_commands(message)
+
+    async def handle_automod(self, message: discord.Message) -> bool:
+        member = message.author if isinstance(message.author, discord.Member) else message.guild.get_member(message.author.id)
+        if member is None:
+            return False
+        lowered = message.content.lower()
+        tokens = set(re.findall(r"[a-z0-9']+", lowered))
+        violation_kind = None
+        if any(token in AUTOMOD_EXPLICIT_WORDS for token in tokens):
+            violation_kind = "explicit_language"
+        elif any(marker in lowered for marker in AUTOMOD_ILLEGAL_LINK_MARKERS):
+            violation_kind = "illegal_link"
+        elif message.mention_everyone or len(message.mentions) >= 8:
+            violation_kind = "mass_mention"
+        else:
+            key = (message.guild.id, member.id)
+            now = datetime.now(UTC)
+            history = [stamp for stamp in self.message_spam_history.get(key, []) if now - stamp <= AUTOMOD_SPAM_WINDOW]
+            history.append(now)
+            self.message_spam_history[key] = history
+            if len(history) >= AUTOMOD_SPAM_THRESHOLD:
+                violation_kind = "message_spam"
+        if violation_kind is None:
+            return False
+
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+
+        recent_count = await self._db_call(
+            self.db.record_automod_violation,
+            message.guild.id,
+            member.id,
+            violation_kind,
+            message.content,
+            default=1,
+            operation="record_automod_violation",
+        )
+        action_text = "timed out for 1 hour"
+        try:
+            if recent_count >= AUTOMOD_BAN_THRESHOLD:
+                await member.ban(reason=f"Auto moderation: {violation_kind}")
+                action_text = "banned"
+            else:
+                await member.timeout(discord.utils.utcnow() + AUTOMOD_TIMEOUT, reason=f"Auto moderation: {violation_kind}")
+        except discord.HTTPException:
+            action_text = "flagged, but I could not apply the moderation action because of permissions or role hierarchy"
+
+        try:
+            await message.channel.send(
+                content=member.mention,
+                embed=make_embed(
+                    user=member,
+                    title="Auto Moderation Triggered",
+                    description=f"Detected `{violation_kind.replace('_', ' ')}`. The user was {action_text}.",
+                    color=ERROR if recent_count >= AUTOMOD_BAN_THRESHOLD else WARNING,
+                    fields=[("Recent Violations", str(recent_count), True)],
+                ),
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+        except discord.HTTPException:
+            pass
+        return True
 
     async def on_command_error(self, context: commands.Context, exception: commands.CommandError) -> None:
         if isinstance(exception, commands.CommandNotFound):
@@ -235,9 +343,9 @@ class StudyBot(commands.Bot):
         if isinstance(channel, discord.VoiceChannel):
             await self._db_call(self.db.deactivate_room, channel.id, default=None, operation="deactivate_room")
 
-    async def _db_call(self, func, *args, default=None, operation: str = "database operation"):
+    async def _db_call(self, func, *args, default=None, operation: str = "database operation", **kwargs):
         try:
-            return await asyncio.to_thread(func, *args)
+            return await asyncio.to_thread(func, *args, **kwargs)
         except PyMongoError as exc:
             log.warning("Skipped %s because MongoDB is unavailable: %s", operation, exc)
             return default

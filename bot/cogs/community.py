@@ -29,6 +29,13 @@ class Community(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    @staticmethod
+    def _display_room_name(owner: discord.abc.User, base_name: str) -> str:
+        clean_owner = owner.display_name.strip() or owner.name
+        clean_base = base_name.strip()
+        full_name = f"{clean_owner} • {clean_base}"
+        return full_name[:100]
+
     def _room_from_current_channel(self, ctx: commands.Context) -> dict | None:
         if not ctx.author.voice or not ctx.author.voice.channel:
             return None
@@ -61,7 +68,7 @@ class Community(commands.Cog):
             return
         if existing_room and existing_channel is None:
             self.bot.db.deactivate_room(existing_room["channel_id"])
-        channel = await ctx.guild.create_voice_channel(name=name, category=category)
+        channel = await ctx.guild.create_voice_channel(name=self._display_room_name(ctx.author, name), category=category)
         room_id = self.bot.db.create_room(ctx.guild.id, name, channel.id, ctx.author.id)
         join_status = "Room created. Join it from the voice list."
         if ctx.author.voice and ctx.author.voice.channel:

@@ -103,6 +103,7 @@ class Database:
             "exams",
             "warnings",
             "study_rooms",
+            "reports",
             "progress_logs",
             "study_sessions",
             "tasks",
@@ -130,6 +131,11 @@ class Database:
         self.db.custom_subjects.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("subject_key", ASCENDING)], unique=True)
         self.db.weekly_rewards.create_index([("guild_id", ASCENDING), ("week_key", ASCENDING)], unique=True)
         self.db.inventory.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("item_key", ASCENDING)], unique=True)
+        self.db.reports.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("created_at", DESCENDING)])
+        self.db.reports.create_index([("guild_id", ASCENDING), ("channel_id", ASCENDING)], unique=True)
+        self.db.report_panels.create_index([("guild_id", ASCENDING)], unique=True)
+        self.db.report_attempts.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("created_at", DESCENDING)])
+        self.db.automod_events.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("created_at", DESCENDING)])
 
     def _next_id(self, name: str) -> int:
         counter = self.db.counters.find_one_and_update(
@@ -624,6 +630,126 @@ class Database:
 
     def get_warnings(self, guild_id: int, user_id: int) -> list[dict]:
         return list(self.db.warnings.find({"guild_id": guild_id, "user_id": user_id}, {"_id": 0}).sort("id", DESCENDING))
+
+    def create_report(self, guild_id: int, user_id: int, request_channel_id: int, report_channel_id: int) -> dict:
+        report_id = self._next_id("reports")
+        payload = {
+            "id": report_id,
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "request_channel_id": request_channel_id,
+            "channel_id": report_channel_id,
+            "status": "awaiting_evidence",
+            "claimed_by": None,
+            "created_at": utc_now(),
+        }
+        self.db.reports.insert_one(payload)
+        return payload
+
+    def get_active_report_for_user(self, guild_id: int, user_id: int) -> dict | None:
+        return self.db.reports.find_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"_id": 0},
+            sort=[("created_at", DESCENDING)],
+        )
+
+    def get_active_report_by_channel(self, guild_id: int, channel_id: int) -> dict | None:
+        return self.db.reports.find_one(
+            {"guild_id": guild_id, "channel_id": channel_id},
+            {"_id": 0},
+            sort=[("created_at", DESCENDING)],
+        )
+
+    def get_active_report_for_dm_user(self, user_id: int) -> dict | None:
+        return self.db.reports.find_one(
+            {"user_id": user_id},
+            {"_id": 0},
+            sort=[("created_at", DESCENDING)],
+        )
+
+    def mark_report_submitted(self, report_id: int) -> None:
+        self.db.reports.update_one(
+            {"id": report_id},
+            {"$set": {"status": "submitted", "submitted_at": utc_now()}},
+        )
+
+    def claim_report(self, report_id: int, moderator_id: int) -> dict | None:
+        return self.db.reports.find_one_and_update(
+            {"id": report_id},
+            {"$set": {"status": "claimed", "claimed_by": moderator_id, "claimed_at": utc_now()}},
+            return_document=ReturnDocument.AFTER,
+            projection={"_id": 0},
+        )
+
+    def close_report(self, report_id: int) -> dict | None:
+        return self.db.reports.find_one_and_delete({"id": report_id}, {"_id": 0})
+
+    def close_report_by_channel(self, guild_id: int, channel_id: int) -> dict | None:
+        return self.db.reports.find_one_and_delete({"guild_id": guild_id, "channel_id": channel_id}, {"_id": 0})
+
+    def get_report_panel_state(self, guild_id: int) -> dict | None:
+        return self.db.report_panels.find_one({"guild_id": guild_id}, {"_id": 0})
+
+    def set_report_panel_state(
+        self,
+        guild_id: int,
+        *,
+        channel_id: int,
+        message_id: int | None = None,
+        category_id: int | None = None,
+    ) -> None:
+        updates: dict[str, object] = {"guild_id": guild_id, "channel_id": channel_id}
+        if message_id is not None:
+            updates["message_id"] = message_id
+        if category_id is not None:
+            updates["category_id"] = category_id
+        self.db.report_panels.update_one(
+            {"guild_id": guild_id},
+            {"$set": updates},
+            upsert=True,
+        )
+
+    def add_report_attempt(self, guild_id: int, user_id: int) -> int:
+        now = utc_now()
+        self.db.report_attempts.insert_one(
+            {
+                "guild_id": guild_id,
+                "user_id": user_id,
+                "created_at": now,
+            }
+        )
+        since = now - timedelta(minutes=10)
+        return int(
+            self.db.report_attempts.count_documents(
+                {
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "created_at": {"$gte": since},
+                }
+            )
+        )
+
+    def record_automod_violation(self, guild_id: int, user_id: int, kind: str, preview: str) -> int:
+        now = utc_now()
+        self.db.automod_events.insert_one(
+            {
+                "guild_id": guild_id,
+                "user_id": user_id,
+                "kind": kind,
+                "preview": preview[:300],
+                "created_at": now,
+            }
+        )
+        since = now - timedelta(hours=24)
+        return int(
+            self.db.automod_events.count_documents(
+                {
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "created_at": {"$gte": since},
+                }
+            )
+        )
 
     def create_room(self, guild_id: int, name: str, channel_id: int, created_by: int) -> int:
         room_id = self._next_id("study_rooms")

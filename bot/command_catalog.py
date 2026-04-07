@@ -47,6 +47,7 @@ COMMAND_DOCS: tuple[CommandDoc, ...] = (
     CommandDoc("weakness", "AI", "Detect weaker subjects from your study history.", "-weakness", "-weakness"),
     CommandDoc("remind", "Utility", "Create one-time or daily reminders.", "-remind me/daily/list/delete", "-remind me 30m Start mock test"),
     CommandDoc("room", "Utility", "Create and manage private study rooms.", "-room create/join/leave/delete/lock/unlock", "-room create Late Night Revision"),
+    CommandDoc("reportpanel", "Utility", "Post the report button panel in #report.", "-reportpanel", "-reportpanel"),
     CommandDoc("reward", "Utility", "Reward a student with study coins.", "-reward <user> <coins>", "-reward @Alex 50"),
     CommandDoc("shop", "Utility", "Browse or buy reward items.", "-shop [item]", "-shop focus_badge"),
     CommandDoc("inventory", "Utility", "Show the items you bought from the shop.", "-inventory", "-inventory"),
