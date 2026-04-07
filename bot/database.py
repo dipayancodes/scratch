@@ -9,6 +9,9 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+LANGUAGE_WARNING_DECAY = timedelta(hours=24)
+
+
 class Database:
     def __init__(self, uri: str, database_name: str) -> None:
         self.client = MongoClient(uri, serverSelectionTimeoutMS=3000, tz_aware=True)
@@ -170,6 +173,7 @@ class Database:
             "protected_until": None,
             "language_warning_count": 0,
             "language_mute_count": 0,
+            "language_warning_expires_at": None,
         }
         self.db.user_stats.update_one(
             {"guild_id": guild_id, "user_id": user_id},
@@ -621,7 +625,20 @@ class Database:
         self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"distraction_warnings": 1}})
         self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"distraction_warnings": 1}})
 
+    def _clear_expired_language_warning_for_user(self, guild_id: int, user_id: int) -> None:
+        now = utc_now()
+        query = {
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "language_warning_count": {"$gt": 0},
+            "language_warning_expires_at": {"$lte": now},
+        }
+        updates = {"language_warning_count": 0, "language_warning_expires_at": None}
+        self.db.users.update_one(query, {"$set": updates})
+        self.db.user_stats.update_one(query, {"$set": updates})
+
     def get_language_enforcement(self, guild_id: int, user_id: int) -> dict[str, int]:
+        self._clear_expired_language_warning_for_user(guild_id, user_id)
         stats = self.get_user_stats(guild_id, user_id)
         return {
             "warning_count": int(stats.get("language_warning_count", 0)),
@@ -630,13 +647,21 @@ class Database:
 
     def add_language_warning(self, guild_id: int, user_id: int) -> dict[str, int]:
         self.ensure_user_stats(guild_id, user_id)
-        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"language_warning_count": 1}})
-        self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"language_warning_count": 1}})
+        self._clear_expired_language_warning_for_user(guild_id, user_id)
+        expires_at = utc_now() + LANGUAGE_WARNING_DECAY
+        self.db.users.update_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$inc": {"language_warning_count": 1}, "$set": {"language_warning_expires_at": expires_at}},
+        )
+        self.db.user_stats.update_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$inc": {"language_warning_count": 1}, "$set": {"language_warning_expires_at": expires_at}},
+        )
         return self.get_language_enforcement(guild_id, user_id)
 
     def apply_language_mute(self, guild_id: int, user_id: int) -> dict[str, int]:
         self.ensure_user_stats(guild_id, user_id)
-        updates = {"language_warning_count": 0}
+        updates = {"language_warning_count": 0, "language_warning_expires_at": None}
         self.db.users.update_one(
             {"guild_id": guild_id, "user_id": user_id},
             {"$set": updates, "$inc": {"language_mute_count": 1}},
@@ -646,6 +671,17 @@ class Database:
             {"$set": updates, "$inc": {"language_mute_count": 1}},
         )
         return self.get_language_enforcement(guild_id, user_id)
+
+    def clear_expired_language_warnings(self) -> int:
+        now = utc_now()
+        query = {
+            "language_warning_count": {"$gt": 0},
+            "language_warning_expires_at": {"$lte": now},
+        }
+        updates = {"language_warning_count": 0, "language_warning_expires_at": None}
+        result = self.db.users.update_many(query, {"$set": updates})
+        self.db.user_stats.update_many(query, {"$set": updates})
+        return int(result.modified_count)
 
     def add_warning(self, guild_id: int, user_id: int, moderator_id: int, reason: str) -> int:
         warning_id = self._next_id("warnings")

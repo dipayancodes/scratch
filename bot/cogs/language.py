@@ -4,7 +4,7 @@ import re
 from datetime import timedelta
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from wordfreq import top_n_list
 
 from bot.ui import ERROR, WARNING, make_embed
@@ -87,6 +87,7 @@ SPEAKER_PATTERN = re.compile(r"^\s*\w+\s*:", re.IGNORECASE)
 URL_PATTERN = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 WORD_PATTERN = re.compile(r"[a-z0-9]+")
 LANGUAGE_MUTE_DURATION = timedelta(hours=2)
+LANGUAGE_WARNING_DECAY_HOURS = 24
 
 
 def normalize(text: str) -> str:
@@ -152,6 +153,10 @@ def should_warn(text: str) -> bool:
 class LanguageEnforcer(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.warning_decay_worker.start()
+
+    def cog_unload(self) -> None:
+        self.warning_decay_worker.cancel()
 
     async def _db_call(self, func, *args, default=None, operation: str = "database operation", **kwargs):
         helper = getattr(self.bot, "_db_call", None)
@@ -192,7 +197,7 @@ class LanguageEnforcer(commands.Cog):
         )
         warning_count = int(counts.get("warning_count", 1))
         mute_count = int(counts.get("mute_count", 0))
-        action_text = "Warning issued."
+        action_text = f"Warning issued. It will expire after {LANGUAGE_WARNING_DECAY_HOURS} hours without another violation."
         color = WARNING
 
         if warning_count > 3:
@@ -242,6 +247,18 @@ class LanguageEnforcer(commands.Cog):
         except discord.HTTPException:
             pass
         return True
+
+    @tasks.loop(hours=1)
+    async def warning_decay_worker(self) -> None:
+        await self._db_call(
+            self.bot.db.clear_expired_language_warnings,
+            default=0,
+            operation="clear_expired_language_warnings",
+        )
+
+    @warning_decay_worker.before_loop
+    async def before_warning_decay_worker(self) -> None:
+        await self.bot.wait_until_ready()
 
 
 async def setup(bot: commands.Bot) -> None:
