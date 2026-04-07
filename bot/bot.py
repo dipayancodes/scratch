@@ -124,6 +124,7 @@ class StudyBot(commands.Bot):
             "bot.cogs.analytics",
             "bot.cogs.gamification",
             "bot.cogs.community",
+            "bot.cogs.language",
             "bot.cogs.reports",
             "bot.cogs.utility",
             "bot.cogs.moderation",
@@ -158,6 +159,11 @@ class StudyBot(commands.Bot):
             return
         if await self.handle_automod(message):
             return
+        language_cog = self.get_cog("LanguageEnforcer")
+        if language_cog is not None and hasattr(language_cog, "handle_message"):
+            handled = await language_cog.handle_message(message)
+            if handled:
+                return
 
         stats = await self._db_call(
             self.db.get_user_stats,

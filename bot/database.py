@@ -168,6 +168,8 @@ class Database:
             "last_checkin": None,
             "streak_protects": 1,
             "protected_until": None,
+            "language_warning_count": 0,
+            "language_mute_count": 0,
         }
         self.db.user_stats.update_one(
             {"guild_id": guild_id, "user_id": user_id},
@@ -618,6 +620,32 @@ class Database:
         self.ensure_user_stats(guild_id, user_id)
         self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"distraction_warnings": 1}})
         self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"distraction_warnings": 1}})
+
+    def get_language_enforcement(self, guild_id: int, user_id: int) -> dict[str, int]:
+        stats = self.get_user_stats(guild_id, user_id)
+        return {
+            "warning_count": int(stats.get("language_warning_count", 0)),
+            "mute_count": int(stats.get("language_mute_count", 0)),
+        }
+
+    def add_language_warning(self, guild_id: int, user_id: int) -> dict[str, int]:
+        self.ensure_user_stats(guild_id, user_id)
+        self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"language_warning_count": 1}})
+        self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"language_warning_count": 1}})
+        return self.get_language_enforcement(guild_id, user_id)
+
+    def apply_language_mute(self, guild_id: int, user_id: int) -> dict[str, int]:
+        self.ensure_user_stats(guild_id, user_id)
+        updates = {"language_warning_count": 0}
+        self.db.users.update_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$set": updates, "$inc": {"language_mute_count": 1}},
+        )
+        self.db.user_stats.update_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$set": updates, "$inc": {"language_mute_count": 1}},
+        )
+        return self.get_language_enforcement(guild_id, user_id)
 
     def add_warning(self, guild_id: int, user_id: int, moderator_id: int, reason: str) -> int:
         warning_id = self._next_id("warnings")
