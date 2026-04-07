@@ -8,11 +8,6 @@ from discord.ext import commands
 
 from bot.ui import ERROR, WARNING, make_embed
 
-try:
-    from wordfreq import zipf_frequency
-except ImportError:
-    zipf_frequency = None
-
 
 EXCLUDED_CHANNEL_IDS = {
     1453299769916129350,
@@ -24,9 +19,8 @@ NON_ENGLISH_WORDS = {
     "acha",
     "achi",
     "ami",
-    "achi",
-    "bhai",
     "bhalo",
+    "bhai",
     "hai",
     "kal",
     "korbo",
@@ -37,38 +31,77 @@ NON_ENGLISH_WORDS = {
     "tum",
     "tumi",
 }
-WORD_PATTERN = re.compile(r"[^\W\d_]+", flags=re.UNICODE)
-ENGLISH_THRESHOLD = 0.3
+QUOTE_PATTERN = re.compile(r'"([^"]+)"|\'([^\']+)\'')
+WORD_PATTERN = re.compile(r"[a-z]+")
+REPORTING_PATTERN = re.compile(r"\b\w+\s+(said|told|mentioned|wrote|replied|asked)\b", re.IGNORECASE)
+SPEAKER_PATTERN = re.compile(r"^\s*\w+\s*:", re.IGNORECASE)
+NORMALIZE_MAP = str.maketrans(
+    {
+        "@": "a",
+        "$": "s",
+        "0": "o",
+        "1": "i",
+        "!": "i",
+        "3": "e",
+        "4": "a",
+        "5": "s",
+        "7": "t",
+        "+": "t",
+    }
+)
 LANGUAGE_MUTE_DURATION = timedelta(hours=2)
 
 
-def _extract_words(text: str) -> list[str]:
-    return [word.lower() for word in WORD_PATTERN.findall(text)]
+def normalize_text(text: str) -> str:
+    normalized = (text or "").lower().translate(NORMALIZE_MAP)
+    return re.sub(r"[^a-z\"':\s]", " ", normalized)
 
 
-def english_score(text: str) -> float:
-    words = _extract_words(text)
+def extract_quotes(text: str) -> list[str]:
+    if not text:
+        return []
+    return [match.group(1) or match.group(2) for match in QUOTE_PATTERN.finditer(text)]
+
+
+def extract_words(text: str) -> list[str]:
+    return WORD_PATTERN.findall(normalize_text(text))
+
+
+def contains_non_english_phrase(words: list[str]) -> bool:
     if not words:
-        return 1.0
-    if zipf_frequency is None:
-        english_like = sum(1 for word in words if word.isascii())
-        return english_like / len(words)
-    english_hits = sum(1 for word in words if zipf_frequency(word, "en") > 0.0)
-    return english_hits / len(words)
+        return False
+    if len(words) == 1 and words[0] in NON_ENGLISH_WORDS:
+        return True
+    streak = 0
+    for word in words:
+        if word in NON_ENGLISH_WORDS:
+            streak += 1
+            if streak >= 2:
+                return True
+        else:
+            streak = 0
+    for index in range(len(words) - 2):
+        if words[index] in NON_ENGLISH_WORDS and words[index + 2] in NON_ENGLISH_WORDS:
+            return True
+    return False
 
 
-def contains_non_english_words(text: str) -> bool:
-    words = set(_extract_words(text))
-    return any(word in NON_ENGLISH_WORDS for word in words)
+def is_reporting_sentence(text: str) -> bool:
+    if not text:
+        return False
+    return bool(REPORTING_PATTERN.search(text) or SPEAKER_PATTERN.search(text))
 
 
 def should_warn(text: str) -> bool:
-    words = _extract_words(text)
-    if len(words) <= 2:
+    if not text or is_reporting_sentence(text):
         return False
-    if contains_non_english_words(text):
+    words = extract_words(text)
+    if contains_non_english_phrase(words):
         return True
-    return english_score(text) < ENGLISH_THRESHOLD
+    for quote in extract_quotes(text):
+        if contains_non_english_phrase(extract_words(quote)):
+            return True
+    return False
 
 
 class LanguageEnforcer(commands.Cog):
@@ -86,18 +119,23 @@ class LanguageEnforcer(commands.Cog):
             return False
         if message.channel.id in EXCLUDED_CHANNEL_IDS:
             return False
-        content = message.content.strip()
+
+        content = (message.content or "").strip()
         if not content:
             return False
+
         prefix = getattr(getattr(self.bot, "settings", None), "prefix", "-")
         if content.startswith(prefix):
             return False
         if self.bot.user is not None and content.startswith(self.bot.user.mention):
             return False
+
         lowered = content.lower()
         if "http://" in lowered or "https://" in lowered or "www." in lowered:
             return False
         if message.mentions or message.role_mentions or message.channel_mentions:
+            return False
+        if is_reporting_sentence(content):
             return False
         if not should_warn(content):
             return False
@@ -157,7 +195,7 @@ class LanguageEnforcer(commands.Cog):
             ],
         )
         try:
-            await message.reply(embed=embed, mention_author=False)
+            await message.reply(content=member.mention, embed=embed, mention_author=False)
         except discord.HTTPException:
             pass
         try:
