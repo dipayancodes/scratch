@@ -641,6 +641,8 @@ class Database:
             "channel_id": report_channel_id,
             "status": "awaiting_evidence",
             "claimed_by": None,
+            "thanked_by": None,
+            "thanked_at": None,
             "created_at": utc_now(),
         }
         self.db.reports.insert_one(payload)
@@ -677,6 +679,14 @@ class Database:
         return self.db.reports.find_one_and_update(
             {"id": report_id},
             {"$set": {"status": "claimed", "claimed_by": moderator_id, "claimed_at": utc_now()}},
+            return_document=ReturnDocument.AFTER,
+            projection={"_id": 0},
+        )
+
+    def mark_report_thanked(self, report_id: int, moderator_id: int) -> dict | None:
+        return self.db.reports.find_one_and_update(
+            {"id": report_id, "thanked_at": None},
+            {"$set": {"thanked_by": moderator_id, "thanked_at": utc_now()}},
             return_document=ReturnDocument.AFTER,
             projection={"_id": 0},
         )

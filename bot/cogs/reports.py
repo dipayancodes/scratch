@@ -15,6 +15,7 @@ REPORT_CHANNEL_ID = 1453301328859103342
 REPORT_CATEGORY_NAME = "Reports"
 REPORT_SPAM_LIMIT = 3
 REPORT_TIMEOUT = timedelta(days=7)
+REPORT_THANK_YOU_REWARD = 75
 
 
 class ReportPanelView(discord.ui.View):
@@ -27,7 +28,7 @@ class ReportPanelView(discord.ui.View):
         await self.cog.open_report(interaction)
 
 
-class ReportCaseView(discord.ui.View):
+class ReportPendingCaseView(discord.ui.View):
     def __init__(self, cog: "Reports") -> None:
         super().__init__(timeout=None)
         self.cog = cog
@@ -36,9 +37,19 @@ class ReportCaseView(discord.ui.View):
     async def claim_report(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self.cog.claim_report(interaction)
 
+
+class ReportClaimedCaseView(discord.ui.View):
+    def __init__(self, cog: "Reports") -> None:
+        super().__init__(timeout=None)
+        self.cog = cog
+
     @discord.ui.button(label="Close", style=discord.ButtonStyle.secondary, custom_id="reports:close")
     async def close_report(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self.cog.close_report(interaction)
+
+    @discord.ui.button(label="Thank You", style=discord.ButtonStyle.success, custom_id="reports:thanks")
+    async def thank_reporter(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.cog.thank_reporter(interaction)
 
 
 class Reports(commands.Cog):
@@ -48,7 +59,8 @@ class Reports(commands.Cog):
 
     async def cog_load(self) -> None:
         self.bot.add_view(ReportPanelView(self))
-        self.bot.add_view(ReportCaseView(self))
+        self.bot.add_view(ReportPendingCaseView(self))
+        self.bot.add_view(ReportClaimedCaseView(self))
 
     async def _db_call(self, func, *args, default=None, operation: str = "database operation", **kwargs):
         helper = getattr(self.bot, "_db_call", None)
@@ -85,8 +97,8 @@ class Reports(commands.Cog):
             description="Use this only for serious reports. Press the button below and I will DM you to collect the full issue and evidence before opening a private staff case.",
             color=WARNING,
             fields=[
-                ("Examples", "Illegal content, harassment, threats, severe rule breaks, or urgent moderator attention.", False),
-                ("How It Works", "Press the button, reply in DM with details and screenshots/videos, then admins review the private case.", False),
+                ("Examples", "Illegal content, harassment, threats, severe rule breaks, or urgent staff/admin attention.", False),
+                ("How It Works", "Press the button, reply in DM with details and screenshots/videos, then staff/admin review the private case.", False),
             ],
         )
 
@@ -216,7 +228,7 @@ class Reports(commands.Cog):
         )
         return panel_channel, True
 
-    @commands.hybrid_command(name="reportpanel", description="Post the report button panel in #report.")
+    @commands.command(name="reportpanel", hidden=True)
     async def reportpanel(self, ctx: commands.Context) -> None:
         member = ctx.author if isinstance(ctx.author, discord.Member) else ctx.guild.get_member(ctx.author.id)
         if member is None or not self._is_staff(member):
@@ -337,7 +349,7 @@ class Reports(commands.Cog):
             header = make_embed(
                 user=interaction.user,
                 title="New Report Case",
-                description="Waiting for the reporter's DM evidence. Admins can claim this case after review.",
+                description="Waiting for the reporter's DM evidence. Staff or admin can claim this case after review.",
                 color=WARNING,
                 fields=[
                     ("Report ID", str(report["id"]), True),
@@ -345,7 +357,7 @@ class Reports(commands.Cog):
                     ("Status", "`awaiting_evidence`", True),
                 ],
             )
-            await report_channel.send(embed=header, view=ReportCaseView(self))
+            await report_channel.send(embed=header, view=ReportPendingCaseView(self))
             await interaction.followup.send(
                 embed=make_embed(
                     user=interaction.user,
@@ -370,8 +382,8 @@ class Reports(commands.Cog):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This button only works inside the server.", ephemeral=True)
             return
-        if not self._is_admin(interaction.user):
-            await interaction.response.send_message("Only administrators can claim reports.", ephemeral=True)
+        if not self._is_staff(interaction.user):
+            await interaction.response.send_message("Only staff or administrators can claim reports.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         report = await self._db_call(
@@ -397,7 +409,7 @@ class Reports(commands.Cog):
                 embed=make_embed(
                     user=interaction.user,
                     title="Already Claimed",
-                    description="Another administrator already claimed this report.",
+                    description="Another staff member already claimed this report.",
                     color=WARNING,
                 ),
                 ephemeral=True,
@@ -430,6 +442,11 @@ class Reports(commands.Cog):
             default=None,
             operation="claim_report",
         )
+        if interaction.message is not None:
+            try:
+                await interaction.message.edit(view=ReportClaimedCaseView(self))
+            except discord.HTTPException:
+                pass
         await interaction.channel.send(
             content=reporter.mention,
             embed=make_embed(
@@ -454,8 +471,8 @@ class Reports(commands.Cog):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This button only works inside the server.", ephemeral=True)
             return
-        if not self._is_admin(interaction.user):
-            await interaction.response.send_message("Only administrators can close reports.", ephemeral=True)
+        if not self._is_staff(interaction.user):
+            await interaction.response.send_message("Only staff or administrators can close reports.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         report = await self._db_call(
@@ -509,6 +526,117 @@ class Reports(commands.Cog):
             await channel.delete(reason=f"Report closed by {interaction.user}")
         except discord.HTTPException:
             pass
+
+    async def thank_reporter(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This button only works inside the server.", ephemeral=True)
+            return
+        if not self._is_staff(interaction.user):
+            await interaction.response.send_message("Only staff or administrators can thank reporters.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        report = await self._db_call(
+            self.bot.db.get_active_report_by_channel,
+            interaction.guild.id,
+            interaction.channel_id,
+            default=None,
+            operation="get_active_report_by_channel",
+        )
+        if report is None or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.followup.send(
+                embed=make_embed(
+                    user=interaction.user,
+                    title="Report Missing",
+                    description="I could not find an active report for this channel.",
+                    color=ERROR,
+                ),
+                ephemeral=True,
+            )
+            return
+        if report.get("thanked_at"):
+            await interaction.followup.send(
+                embed=make_embed(
+                    user=interaction.user,
+                    title="Already Rewarded",
+                    description="This report was already thanked and rewarded.",
+                    color=WARNING,
+                ),
+                ephemeral=True,
+            )
+            return
+        reporter = interaction.guild.get_member(report["user_id"])
+        user = reporter
+        if user is None:
+            user = self.bot.get_user(report["user_id"])
+            if user is None:
+                try:
+                    user = await self.bot.fetch_user(report["user_id"])
+                except discord.HTTPException:
+                    user = None
+        updated = await self._db_call(
+            self.bot.db.mark_report_thanked,
+            report["id"],
+            interaction.user.id,
+            default=None,
+            operation="mark_report_thanked",
+        )
+        if updated is None:
+            await interaction.followup.send(
+                embed=make_embed(
+                    user=interaction.user,
+                    title="Already Rewarded",
+                    description="This report was already thanked and rewarded.",
+                    color=WARNING,
+                ),
+                ephemeral=True,
+            )
+            return
+        await self._db_call(
+            self.bot.db.add_coins,
+            interaction.guild.id,
+            report["user_id"],
+            REPORT_THANK_YOU_REWARD,
+            default=None,
+            operation="reward_reporter_coins",
+        )
+        if user is not None:
+            try:
+                await user.send(
+                    embed=make_embed(
+                        user=user,
+                        title="Thank You for Reporting",
+                        description=(
+                            "Your report helped the staff team review a serious issue. "
+                            f"You received `{REPORT_THANK_YOU_REWARD}` reward points for doing the right thing."
+                        ),
+                        color=SUCCESS,
+                    )
+                )
+            except discord.HTTPException:
+                pass
+        mention = reporter.mention if reporter is not None else f"`{report['user_id']}`"
+        await interaction.channel.send(
+            content=reporter.mention if reporter is not None else None,
+            embed=make_embed(
+                user=interaction.user,
+                title="Reporter Thanked",
+                description=(
+                    f"{mention} was thanked for a valid report and received "
+                    f"`{REPORT_THANK_YOU_REWARD}` reward points."
+                ),
+                color=SUCCESS,
+            ),
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+        await interaction.followup.send(
+            embed=make_embed(
+                user=interaction.user,
+                title="Thank You Sent",
+                description="The reporter was DM'd and rewarded.",
+                color=SUCCESS,
+            ),
+            ephemeral=True,
+        )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
