@@ -2,6 +2,8 @@ name: Run Discord Bot
 
 on:
   workflow_dispatch:
+  push:
+    branches: ["main"]   # triggers when you push code
   schedule:
     - cron: "0 */5 * * *"  # every 5 hours
 
