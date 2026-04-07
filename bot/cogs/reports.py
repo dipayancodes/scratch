@@ -79,7 +79,7 @@ class Reports(commands.Cog):
     @staticmethod
     def _report_channel_name(user: discord.abc.User) -> str:
         display = user.display_name.replace("\n", " ").strip() or user.name
-        return f"report | {display}"[:100]
+        return f"report • {display}"[:100]
 
     def _creation_lock(self, guild_id: int, user_id: int) -> asyncio.Lock:
         key = (guild_id, user_id)
@@ -120,7 +120,7 @@ class Reports(commands.Cog):
                 embed_links=True,
             )
         for role in guild.roles:
-            if role.id == ADMIN_ROLE_ID or role.permissions.administrator:
+            if role.id in {ADMIN_ROLE_ID, STAFF_ROLE_ID} or role.permissions.administrator:
                 overwrites[role] = discord.PermissionOverwrite(
                     view_channel=True,
                     send_messages=True,
@@ -235,7 +235,7 @@ class Reports(commands.Cog):
             await reply_embed(
                 ctx,
                 title="Permission Error",
-                description="Only staff or administrators can post the report panel.",
+                description="Only Staff or Admin can post the report panel.",
                 color=WARNING,
             )
             return
@@ -286,7 +286,7 @@ class Reports(commands.Cog):
                     user=interaction.user,
                     title="Report Already Open",
                     description=(
-                        "You already have an active report. Continue in DM or wait for admins to close the current case."
+                        "You already have an active report. Continue in DM or wait for Staff/Admin to close the current case."
                         if not muted
                         else "You spammed the report button while a case was already open, so you were muted for 1 week."
                     ),
@@ -314,55 +314,30 @@ class Reports(commands.Cog):
                     ephemeral=True,
                 )
                 return
-            panel_channel = self._target_panel_channel(interaction.guild)
-            category = await self._ensure_report_category(interaction.guild, panel_channel)
-            report_channel = await interaction.guild.create_text_channel(
-                name=self._report_channel_name(interaction.user),
-                category=category,
-                overwrites=self._report_overwrites(interaction.guild),
-                reason=f"Report case for {interaction.user}",
-            )
             report = await self._db_call(
                 self.bot.db.create_report,
                 interaction.guild.id,
                 interaction.user.id,
-                panel_channel.id if panel_channel is not None else 0,
-                report_channel.id,
+                REPORT_CHANNEL_ID,
                 default=None,
                 operation="create_report",
             )
             if report is None:
-                try:
-                    await report_channel.delete(reason="Failed to persist report state.")
-                except discord.HTTPException:
-                    pass
                 await interaction.followup.send(
                     embed=make_embed(
                         user=interaction.user,
-                        title="Report Failed",
-                        description="I could not open the private report case right now. Try again in a moment.",
+                        title="Report Intake Failed",
+                        description="I could not start the private report intake right now. Try again in a moment.",
                         color=ERROR,
                     ),
                     ephemeral=True,
                 )
                 return
-            header = make_embed(
-                user=interaction.user,
-                title="New Report Case",
-                description="Waiting for the reporter's DM evidence. Staff or admin can claim this case after review.",
-                color=WARNING,
-                fields=[
-                    ("Report ID", str(report["id"]), True),
-                    ("Reporter", f"{interaction.user.mention} (`{interaction.user.id}`)", False),
-                    ("Status", "`awaiting_evidence`", True),
-                ],
-            )
-            await report_channel.send(embed=header, view=ReportPendingCaseView(self))
             await interaction.followup.send(
                 embed=make_embed(
                     user=interaction.user,
                     title="Check Your DMs",
-                    description="Your report intake is open. Send the full issue and any evidence in DM now.",
+                    description="Your report intake is open. Send the full issue and any evidence in DM now. The private case channel will be created only after you send the evidence.",
                     color=SUCCESS,
                 ),
                 ephemeral=True,
@@ -383,7 +358,7 @@ class Reports(commands.Cog):
             await interaction.response.send_message("This button only works inside the server.", ephemeral=True)
             return
         if not self._is_staff(interaction.user):
-            await interaction.response.send_message("Only staff or administrators can claim reports.", ephemeral=True)
+            await interaction.response.send_message("Only Staff or Admin can claim reports.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         report = await self._db_call(
@@ -472,7 +447,7 @@ class Reports(commands.Cog):
             await interaction.response.send_message("This button only works inside the server.", ephemeral=True)
             return
         if not self._is_staff(interaction.user):
-            await interaction.response.send_message("Only staff or administrators can close reports.", ephemeral=True)
+            await interaction.response.send_message("Only Staff or Admin can close reports.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         report = await self._db_call(
@@ -532,7 +507,7 @@ class Reports(commands.Cog):
             await interaction.response.send_message("This button only works inside the server.", ephemeral=True)
             return
         if not self._is_staff(interaction.user):
-            await interaction.response.send_message("Only staff or administrators can thank reporters.", ephemeral=True)
+            await interaction.response.send_message("Only Staff or Admin can thank reporters.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         report = await self._db_call(
@@ -614,29 +589,25 @@ class Reports(commands.Cog):
                 )
             except discord.HTTPException:
                 pass
-        mention = reporter.mention if reporter is not None else f"`{report['user_id']}`"
-        await interaction.channel.send(
-            content=reporter.mention if reporter is not None else None,
-            embed=make_embed(
-                user=interaction.user,
-                title="Reporter Thanked",
-                description=(
-                    f"{mention} was thanked for a valid report and received "
-                    f"`{REPORT_THANK_YOU_REWARD}` reward points."
-                ),
-                color=SUCCESS,
-            ),
-            allowed_mentions=discord.AllowedMentions(users=True),
+        await self._db_call(
+            self.bot.db.close_report,
+            report["id"],
+            default=None,
+            operation="close_report_after_thanks",
         )
         await interaction.followup.send(
             embed=make_embed(
                 user=interaction.user,
                 title="Thank You Sent",
-                description="The reporter was DM'd and rewarded.",
+                description="The reporter was DM'd, rewarded, and this case will now be closed.",
                 color=SUCCESS,
             ),
             ephemeral=True,
         )
+        try:
+            await interaction.channel.delete(reason=f"Report thanked and closed by {interaction.user}")
+        except discord.HTTPException:
+            pass
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -656,7 +627,7 @@ class Reports(commands.Cog):
                     embed=make_embed(
                         user=message.author,
                         title="More Detail Needed",
-                        description="Send the issue details or attach screenshots, photos, or videos so I can forward them to admins.",
+                        description="Send the issue details or attach screenshots, photos, or videos so I can forward them to Staff/Admin.",
                         color=WARNING,
                     ),
                     mention_author=False,
@@ -665,15 +636,56 @@ class Reports(commands.Cog):
                 pass
             return
         guild = self.bot.get_guild(report["guild_id"])
-        channel = guild.get_channel(report["channel_id"]) if guild is not None else None
-        if not isinstance(channel, discord.TextChannel):
-            await self._db_call(
-                self.bot.db.close_report,
-                report["id"],
-                default=None,
-                operation="close_report_missing_channel",
-            )
+        if guild is None:
             return
+        channel = guild.get_channel(report.get("channel_id", 0)) if report.get("channel_id") else None
+        if not isinstance(channel, discord.TextChannel):
+            panel_channel = self._target_panel_channel(guild)
+            category = await self._ensure_report_category(guild, panel_channel)
+            try:
+                channel = await guild.create_text_channel(
+                    name=self._report_channel_name(message.author),
+                    category=category,
+                    overwrites=self._report_overwrites(guild),
+                    reason=f"Report case for {message.author}",
+                )
+            except discord.HTTPException:
+                try:
+                    await message.reply(
+                        embed=make_embed(
+                            user=message.author,
+                            title="Report Channel Failed",
+                            description="I received your evidence, but I could not create the private case channel right now. Try again shortly.",
+                            color=ERROR,
+                        ),
+                        mention_author=False,
+                    )
+                except discord.HTTPException:
+                    pass
+                return
+            await self._db_call(
+                self.bot.db.attach_report_channel,
+                report["id"],
+                channel.id,
+                default=None,
+                operation="attach_report_channel",
+            )
+            await channel.send(
+                content=f"<@&{STAFF_ROLE_ID}> <@&{ADMIN_ROLE_ID}>",
+                embed=make_embed(
+                    user=message.author,
+                    title="New Report Case",
+                    description="Evidence has been received. Staff or admin can claim this case now.",
+                    color=WARNING,
+                    fields=[
+                        ("Report ID", str(report["id"]), True),
+                        ("Reporter", f"{message.author.mention} (`{message.author.id}`)", False),
+                        ("Status", "`submitted`", True),
+                    ],
+                ),
+                view=ReportPendingCaseView(self),
+                allowed_mentions=discord.AllowedMentions(roles=True),
+            )
         attachment_block = "\n".join(attachment.url for attachment in message.attachments)
         details = message.content.strip() or "Attachment-only evidence submitted."
         fields = [("Reporter", f"{message.author.mention} (`{message.author.id}`)", False)]
@@ -701,7 +713,7 @@ class Reports(commands.Cog):
                 embed=make_embed(
                     user=message.author,
                     title="Evidence Forwarded",
-                    description="Your report details were sent to the private admin case channel.",
+                    description="Your report details were sent to the private Staff/Admin case channel.",
                     color=SUCCESS,
                 ),
                 mention_author=False,

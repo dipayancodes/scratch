@@ -90,6 +90,7 @@ class Database:
         for collection_name, index_name in (
             ("notes", "guild_id_1_user_id_1_title_key_1"),
             ("plans", "guild_id_1_user_id_1_day_key_1"),
+            ("reports", "guild_id_1_channel_id_1"),
         ):
             try:
                 self.db[collection_name].drop_index(index_name)
@@ -132,7 +133,11 @@ class Database:
         self.db.weekly_rewards.create_index([("guild_id", ASCENDING), ("week_key", ASCENDING)], unique=True)
         self.db.inventory.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("item_key", ASCENDING)], unique=True)
         self.db.reports.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("created_at", DESCENDING)])
-        self.db.reports.create_index([("guild_id", ASCENDING), ("channel_id", ASCENDING)], unique=True)
+        self.db.reports.create_index(
+            [("guild_id", ASCENDING), ("channel_id", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"channel_id": {"$exists": True}},
+        )
         self.db.report_panels.create_index([("guild_id", ASCENDING)], unique=True)
         self.db.report_attempts.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("created_at", DESCENDING)])
         self.db.automod_events.create_index([("guild_id", ASCENDING), ("user_id", ASCENDING), ("created_at", DESCENDING)])
@@ -631,20 +636,21 @@ class Database:
     def get_warnings(self, guild_id: int, user_id: int) -> list[dict]:
         return list(self.db.warnings.find({"guild_id": guild_id, "user_id": user_id}, {"_id": 0}).sort("id", DESCENDING))
 
-    def create_report(self, guild_id: int, user_id: int, request_channel_id: int, report_channel_id: int) -> dict:
+    def create_report(self, guild_id: int, user_id: int, request_channel_id: int, report_channel_id: int | None = None) -> dict:
         report_id = self._next_id("reports")
         payload = {
             "id": report_id,
             "guild_id": guild_id,
             "user_id": user_id,
             "request_channel_id": request_channel_id,
-            "channel_id": report_channel_id,
             "status": "awaiting_evidence",
             "claimed_by": None,
             "thanked_by": None,
             "thanked_at": None,
             "created_at": utc_now(),
         }
+        if report_channel_id is not None:
+            payload["channel_id"] = report_channel_id
         self.db.reports.insert_one(payload)
         return payload
 
@@ -673,6 +679,14 @@ class Database:
         self.db.reports.update_one(
             {"id": report_id},
             {"$set": {"status": "submitted", "submitted_at": utc_now()}},
+        )
+
+    def attach_report_channel(self, report_id: int, channel_id: int) -> dict | None:
+        return self.db.reports.find_one_and_update(
+            {"id": report_id},
+            {"$set": {"channel_id": channel_id}},
+            return_document=ReturnDocument.AFTER,
+            projection={"_id": 0},
         )
 
     def claim_report(self, report_id: int, moderator_id: int) -> dict | None:
