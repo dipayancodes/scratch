@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import discord
 from discord.ext import commands
+from wordfreq import top_n_list
 
 from bot.ui import ERROR, WARNING, make_embed
 
@@ -31,57 +32,93 @@ NON_ENGLISH_WORDS = {
     "tum",
     "tumi",
 }
-QUOTE_PATTERN = re.compile(r'"([^"]+)"|\'([^\']+)\'')
-WORD_PATTERN = re.compile(r"[a-z]+")
+ENGLISH_EXTRA_WORDS = {
+    "afk",
+    "alr",
+    "alright",
+    "bcuz",
+    "bcz",
+    "bro",
+    "bruh",
+    "coz",
+    "cya",
+    "dm",
+    "dont",
+    "fr",
+    "gud",
+    "helo",
+    "hey",
+    "hi",
+    "hii",
+    "hlo",
+    "idk",
+    "im",
+    "ive",
+    "lemme",
+    "lol",
+    "lmao",
+    "msg",
+    "mrng",
+    "nah",
+    "ngl",
+    "nope",
+    "ok",
+    "okay",
+    "omg",
+    "pls",
+    "plz",
+    "rn",
+    "sup",
+    "thx",
+    "ty",
+    "u",
+    "ur",
+    "wanna",
+    "wassup",
+    "wsp",
+    "ya",
+    "yo",
+    "youre",
+}
+ENGLISH_WORDS = set(top_n_list("en", 50000)) | ENGLISH_EXTRA_WORDS
+ALLOWED_CHARS_PATTERN = re.compile(r"^[A-Za-z0-9\s.,!?;:'\"()\[\]{}\-_/@#$%^&*+=<>|`~\\]*$")
 REPORTING_PATTERN = re.compile(r"\b\w+\s+(said|told|mentioned|wrote|replied|asked)\b", re.IGNORECASE)
 SPEAKER_PATTERN = re.compile(r"^\s*\w+\s*:", re.IGNORECASE)
-NORMALIZE_MAP = str.maketrans(
-    {
-        "@": "a",
-        "$": "s",
-        "0": "o",
-        "1": "i",
-        "!": "i",
-        "3": "e",
-        "4": "a",
-        "5": "s",
-        "7": "t",
-        "+": "t",
-    }
-)
+URL_PATTERN = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+WORD_PATTERN = re.compile(r"[a-z0-9]+")
 LANGUAGE_MUTE_DURATION = timedelta(hours=2)
 
 
-def normalize_text(text: str) -> str:
-    normalized = (text or "").lower().translate(NORMALIZE_MAP)
-    return re.sub(r"[^a-z\"':\s]", " ", normalized)
+def normalize(text: str) -> str:
+    text = (text or "").lower()
+    text = URL_PATTERN.sub(" ", text)
+    text = re.sub(r"(?<=[a-z0-9])[^a-z0-9\s]+(?=[a-z0-9])", "", text)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def extract_quotes(text: str) -> list[str]:
-    if not text:
-        return []
-    return [match.group(1) or match.group(2) for match in QUOTE_PATTERN.finditer(text)]
-
-
-def extract_words(text: str) -> list[str]:
-    return WORD_PATTERN.findall(normalize_text(text))
+def is_english_word(word: str) -> bool:
+    if not word:
+        return False
+    if word.isdigit():
+        return True
+    if word in NON_ENGLISH_WORDS:
+        return False
+    return word in ENGLISH_WORDS
 
 
 def contains_non_english_phrase(words: list[str]) -> bool:
     if not words:
         return False
-    if len(words) == 1 and words[0] in NON_ENGLISH_WORDS:
-        return True
+    if len(words) == 1:
+        return not is_english_word(words[0])
     streak = 0
     for word in words:
-        if word in NON_ENGLISH_WORDS:
-            streak += 1
-            if streak >= 2:
-                return True
-        else:
+        if is_english_word(word):
             streak = 0
-    for index in range(len(words) - 2):
-        if words[index] in NON_ENGLISH_WORDS and words[index + 2] in NON_ENGLISH_WORDS:
+            continue
+        streak += 1
+        if streak >= 2:
             return True
     return False
 
@@ -93,15 +130,23 @@ def is_reporting_sentence(text: str) -> bool:
 
 
 def should_warn(text: str) -> bool:
-    if not text or is_reporting_sentence(text):
+    if not text:
         return False
-    words = extract_words(text)
+    if is_reporting_sentence(text):
+        return False
+    if not ALLOWED_CHARS_PATTERN.fullmatch(text):
+        return True
+    normalized = normalize(text)
+    if not normalized:
+        return False
+    words = WORD_PATTERN.findall(normalized)
+    if not words:
+        return False
     if contains_non_english_phrase(words):
         return True
-    for quote in extract_quotes(text):
-        if contains_non_english_phrase(extract_words(quote)):
-            return True
-    return False
+    valid_words = sum(1 for word in words if is_english_word(word))
+    invalid_words = len(words) - valid_words
+    return invalid_words > valid_words
 
 
 class LanguageEnforcer(commands.Cog):
@@ -128,12 +173,6 @@ class LanguageEnforcer(commands.Cog):
         if content.startswith(prefix):
             return False
         if self.bot.user is not None and content.startswith(self.bot.user.mention):
-            return False
-
-        lowered = content.lower()
-        if "http://" in lowered or "https://" in lowered or "www." in lowered:
-            return False
-        if message.mentions or message.role_mentions or message.channel_mentions:
             return False
         if is_reporting_sentence(content):
             return False
