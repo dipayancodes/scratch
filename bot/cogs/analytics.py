@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import discord
 from discord.ext import commands
+import logging
 
 from bot.cog_helpers import progress_bar
 from bot.dashboard_card import render_dashboard_card
 from bot.ui import INFO, reply_embed
+
+
+log = logging.getLogger(__name__)
 
 
 class Analytics(commands.Cog):
@@ -56,17 +60,15 @@ class Analytics(commands.Cog):
                 color=INFO,
             )
             embed.set_image(url="attachment://study-dashboard.png")
-            if getattr(ctx, "interaction", None) is not None:
-                await ctx.interaction.followup.send(
-                    content=ctx.author.mention,
-                    embed=embed,
-                    file=file,
-                    allowed_mentions=discord.AllowedMentions(users=True),
-                )
-                return
-            await ctx.reply(content=ctx.author.mention, embed=embed, file=file, mention_author=False)
+            await ctx.send(
+                content=ctx.author.mention,
+                embed=embed,
+                file=file,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
             return
-        except Exception:
+        except Exception as exc:
+            log.exception("Dashboard image generation failed for guild=%s user=%s", ctx.guild.id if ctx.guild else "unknown", ctx.author.id if ctx.author else "unknown")
             tasks = "\n".join(f"`{row['id']}` {row['content']}" for row in data["tasks"]) or "No pending tasks"
             exams = "\n".join(f"`{row['id']}` {row['subject']} - {row['exam_date']}" for row in data["exams"]) or "No exams saved"
             plans = "\n".join(f"{row['day'].title()} - {row['target_date']}" for row in data["plans"]) or "No saved plans"
@@ -75,7 +77,7 @@ class Analytics(commands.Cog):
             await reply_embed(
                 ctx,
                 title="Study Dashboard",
-                description="Your all-in-one study snapshot.",
+                description="Dashboard image failed, so I sent the text fallback instead.",
                 color=INFO,
                 fields=[
                     ("Streak", f"`{summary['streak']}` days", True),
@@ -86,6 +88,7 @@ class Analytics(commands.Cog):
                     ("Plans", plans, False),
                     ("Exams", exams, False),
                     ("Loadout", inventory, False),
+                    ("Error", f"`{exc.__class__.__name__}`", True),
                 ],
             )
 
