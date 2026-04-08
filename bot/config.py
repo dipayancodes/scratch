@@ -31,7 +31,7 @@ def load_settings() -> Settings:
         mongodb_uri=os.getenv("MONGODB_URI", "mongodb://localhost:27017/").strip() or "mongodb://localhost:27017/",
         mongodb_database=os.getenv("MONGODB_DATABASE", "study_os").strip() or "study_os",
         groq_api_key=_get_optional("GROQ_API_KEY"),
-        groq_model=os.getenv("GROQ_MODEL", "llama3-8b-8192").strip() or "llama3-8b-8192",
+        groq_model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip() or "llama-3.1-8b-instant",
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO",
     )
 

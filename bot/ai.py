@@ -10,8 +10,8 @@ import re
 
 log = logging.getLogger(__name__)
 FALLBACK_MODELS = (
-    "llama3-8b-8192",
     "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
     "llama-3.1-70b-versatile",
 )
 
@@ -356,6 +356,7 @@ class StudyAI:
                 clean = (content or "").strip()
                 if model_name != self.model:
                     log.warning("Groq request used fallback model %s instead of configured model %s.", model_name, self.model)
+                    self.model = model_name
                 return (clean or "I could not generate a complete response for that request."), None
             except Exception as exc:
                 status_code = getattr(exc, "status_code", None)
