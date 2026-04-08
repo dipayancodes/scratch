@@ -839,6 +839,29 @@ class Database:
             )
         )
 
+    def record_text_violation(self, guild_id: int, user_id: int, kind: str, preview: str) -> int:
+        now = utc_now()
+        self.db.automod_events.insert_one(
+            {
+                "guild_id": guild_id,
+                "user_id": user_id,
+                "kind": kind,
+                "preview": preview[:300],
+                "created_at": now,
+            }
+        )
+        since = now - timedelta(hours=24)
+        return int(
+            self.db.automod_events.count_documents(
+                {
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "kind": kind,
+                    "created_at": {"$gte": since},
+                }
+            )
+        )
+
     def create_room(self, guild_id: int, name: str, channel_id: int, created_by: int) -> int:
         room_id = self._next_id("study_rooms")
         self.db.study_rooms.insert_one(

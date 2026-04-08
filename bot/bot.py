@@ -4,7 +4,6 @@ import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import logging
-import re
 
 import discord
 from discord.ext import commands, tasks
@@ -14,7 +13,7 @@ from bot.ai import StudyAI
 from bot.config import Settings, load_settings
 from bot.database import Database
 from bot.logging_setup import configure_logging
-from bot.ui import INFO, SUCCESS, WARNING, make_embed, reply_embed, reply_to_message
+from bot.ui import ERROR, INFO, SUCCESS, WARNING, make_embed, reply_embed, reply_to_message
 
 log = logging.getLogger(__name__)
 CAMERA_WARNING_CHANNEL_ID = 1490599054479196313
@@ -24,21 +23,6 @@ AUTOMOD_TIMEOUT = timedelta(hours=1)
 AUTOMOD_BAN_THRESHOLD = 3
 AUTOMOD_SPAM_WINDOW = timedelta(seconds=8)
 AUTOMOD_SPAM_THRESHOLD = 6
-AUTOMOD_EXPLICIT_WORDS = {
-    "bitch",
-    "cock",
-    "cunt",
-    "dick",
-    "fuck",
-    "motherfucker",
-    "nigger",
-    "porn",
-    "pornography",
-    "pussy",
-    "retard",
-    "slut",
-    "whore",
-}
 AUTOMOD_ILLEGAL_LINK_MARKERS = (
     "pornhub.",
     "xvideos.",
@@ -203,11 +187,8 @@ class StudyBot(commands.Bot):
         if member is None:
             return False
         lowered = message.content.lower()
-        tokens = set(re.findall(r"[a-z0-9']+", lowered))
         violation_kind = None
-        if any(token in AUTOMOD_EXPLICIT_WORDS for token in tokens):
-            violation_kind = "explicit_language"
-        elif any(marker in lowered for marker in AUTOMOD_ILLEGAL_LINK_MARKERS):
+        if any(marker in lowered for marker in AUTOMOD_ILLEGAL_LINK_MARKERS):
             violation_kind = "illegal_link"
         elif message.mention_everyone or len(message.mentions) >= 8:
             violation_kind = "mass_mention"

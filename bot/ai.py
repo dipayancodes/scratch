@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from dataclasses import dataclass
+import json
 import logging
 import re
 
@@ -17,14 +19,131 @@ SYSTEM_PROMPT = (
     "You are a concise study assistant for students. "
     "Explain clearly, stay practical, and structure answers so they help revision and retention."
 )
-LANGUAGE_MODERATION_PROMPT = (
-    "You are classifying one Discord message for English-only moderation.\n"
-    "Return exactly one lowercase label: english or non-english.\n"
-    "Classify as english when the user is trying to communicate in English, even if the message has slang, typos, short greetings, casual spelling, abbreviations, or imperfect grammar.\n"
-    "Classify as non-english when the message is mainly in another language, a romanized foreign language, or a mixed-language sentence whose intent is not English.\n"
-    "Treat pure English reporting statements such as name said \"...\" or teacher: \"...\" as english.\n"
-    "Do not explain your answer."
+ASK_SYSTEM_PROMPT = (
+    "You are a concise study assistant for students.\n"
+    "Answer with the minimum useful help for the exact question.\n"
+    "Default to 1 to 5 short sentences.\n"
+    "Only go longer when the user explicitly asks for detail, steps, or examples.\n"
+    "Avoid filler, repetition, and long intros."
 )
+MESSAGE_MODERATION_PROMPT = (
+    "You are moderating one Discord message for a study server.\n"
+    "Return exactly one line in this format: label|short reason\n"
+    "Allowed labels:\n"
+    "- allow\n"
+    "- non_english\n"
+    "- gibberish\n"
+    "- explicit\n"
+    "- abusive\n"
+    "Use non_english when the message is mainly another language or romanized non-English.\n"
+    "Use gibberish when it is unreadable, nonsense, or not meaningful English.\n"
+    "Use explicit when it is sexual, vulgar, obscene, slur-heavy, or clearly inappropriate slang.\n"
+    "Use abusive when it is insulting, harassing, baiting, demeaning, threatening, or hostile arguing.\n"
+    "Treat short English slang like lol, bro, brb, lmao, ok, yup as allow unless it is vulgar or abusive.\n"
+    "Treat harmless jokes as allow, but hostile jokes targeting a person as abusive.\n"
+    "If unsure, choose allow.\n"
+    "Do not add markdown or extra explanation."
+)
+PLAN_SYSTEM_PROMPT = (
+    "You create short, practical study plans.\n"
+    "Return only JSON.\n"
+    "Make each day minimal but useful.\n"
+    "Each day should have 1 to 3 short tasks, not long paragraphs."
+)
+SAFE_SHORT_ENGLISH = {
+    "aight",
+    "alr",
+    "brb",
+    "bro",
+    "cool",
+    "fine",
+    "gg",
+    "hi",
+    "hmm",
+    "k",
+    "kk",
+    "lmao",
+    "lol",
+    "nah",
+    "nice",
+    "nope",
+    "ok",
+    "okay",
+    "pls",
+    "sure",
+    "thx",
+    "ty",
+    "wait",
+    "what",
+    "yep",
+    "yo",
+    "yup",
+}
+FALLBACK_EXPLICIT_WORDS = {
+    "bastard",
+    "bitch",
+    "cock",
+    "cunt",
+    "damn",
+    "dick",
+    "fucker",
+    "fucking",
+    "fuck",
+    "motherfucker",
+    "nigger",
+    "porn",
+    "pornography",
+    "pussy",
+    "retard",
+    "shit",
+    "slut",
+    "whore",
+}
+FALLBACK_ABUSIVE_MARKERS = (
+    "are you stupid",
+    "dumbass",
+    "fuck you",
+    "idiot",
+    "kill yourself",
+    "loser",
+    "moron",
+    "nobody likes you",
+    "piece of shit",
+    "shut up",
+    "stfu",
+    "screw you",
+    "trash",
+    "ugly rat",
+    "you suck",
+)
+COMMON_ENGLISH_HINTS = {
+    "about",
+    "after",
+    "because",
+    "bro",
+    "could",
+    "exam",
+    "have",
+    "hello",
+    "please",
+    "study",
+    "thanks",
+    "there",
+    "think",
+    "what",
+    "when",
+    "where",
+    "which",
+    "why",
+    "will",
+    "would",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ModerationDecision:
+    label: str
+    reason: str
 
 
 class StudyAI:
@@ -53,21 +172,22 @@ class StudyAI:
         question = (question or "").strip()
         if not question:
             return "Ask a clear study question and I will help you break it down."
+        max_tokens = self._ask_token_budget(question)
         if self.enabled:
-            result, error = await self._call_groq(question)
+            result, error = await self._create_completion(
+                system_prompt=ASK_SYSTEM_PROMPT,
+                prompt=question,
+                temperature=0.2,
+                max_tokens=max_tokens,
+                top_p=0.85,
+            )
             if result:
                 return result
             if error == "auth":
                 return self._auth_error_message()
             if error == "transport":
                 return self._transport_error_message()
-        return (
-            f"{self._unavailable_message()}\n\n"
-            "Fallback study guide:\n"
-            f"1. Restate the topic: {question}\n"
-            "2. Break it into definition, rule or formula, example, and common mistake.\n"
-            "3. Turn the answer into 3 flashcards after you understand it."
-        )
+        return self._fallback_answer(question)
 
     async def summarize(self, text: str) -> str:
         text = (text or "").strip()
@@ -119,59 +239,71 @@ class StudyAI:
         return "\n".join(result)
 
     async def generate_plan(self, exam: str, days: int) -> str:
+        entries = await self.generate_plan_entries(exam, days)
         exam = (exam or "").strip()
         if not exam:
             return "Give me the exam name and the number of days available."
+        return self._format_plan_entries(exam, entries)
+
+    async def generate_plan_entries(self, exam: str, days: int) -> list[dict[str, object]]:
+        exam = (exam or "").strip()
+        if not exam:
+            return []
         days = max(1, min(int(days), 30))
         if self.enabled:
-            prompt = f"Create a day-by-day study plan for a student preparing for an exam.\nExam: {exam}\nDays available: {days}"
-            result, error = await self._call_groq(prompt)
-            if result:
-                return result
+            prompt = (
+                f"Exam: {exam}\n"
+                f"Days available: {days}\n\n"
+                f"Return a JSON array with exactly {days} objects.\n"
+                "Each object must contain:\n"
+                '- "day_title": a very short label for the day\n'
+                '- "tasks": an array of 1 to 3 short study tasks\n'
+                "Keep the workload realistic and concise."
+            )
+            result, error = await self._create_completion(
+                system_prompt=PLAN_SYSTEM_PROMPT,
+                prompt=prompt,
+                temperature=0.3,
+                max_tokens=min(2400, 140 * days + 200),
+                top_p=0.9,
+            )
+            entries = self._parse_plan_entries(result, days)
+            if entries:
+                return entries
             if error == "auth":
-                return self._auth_error_message()
+                return self._fallback_plan_entries(exam, days)
             if error == "transport":
-                return self._transport_error_message()
+                return self._fallback_plan_entries(exam, days)
 
-        lines = [f"Study plan for {exam} ({days} days):"]
-        for day in range(1, days + 1):
-            if day < days * 0.6:
-                phase = "learn core concepts and make notes"
-            elif day < days:
-                phase = "practice questions and active recall"
-            else:
-                phase = "final revision, weak-topic review, and mock test"
-            lines.append(f"- Day {day}: {phase}")
-        return "\n".join(lines)
+        return self._fallback_plan_entries(exam, days)
 
     async def classify_language(self, text: str) -> str | None:
         text = (text or "").strip()
         if not text:
             return "english"
-        if not self.enabled:
-            log.warning("Skipped Groq language moderation because AI is unavailable: %s", self.status_reason)
-            return None
-        result, error = await self._create_completion(
-            system_prompt=LANGUAGE_MODERATION_PROMPT,
-            prompt=f"Classify this message:\n{text}",
-            temperature=0.0,
-            max_tokens=8,
-            top_p=1.0,
-        )
-        if result:
-            lowered = result.strip().lower()
-            compact = re.sub(r"[^a-z-]", "", lowered)
-            if "non-english" in lowered or compact == "nonenglish":
-                return "non-english"
-            if compact == "english":
-                return "english"
-            log.warning("Unexpected Groq language moderation response: %r", result)
-            return None
-        if error == "auth":
-            log.warning("Skipped Groq language moderation because authentication failed.")
-            return None
-        log.warning("Skipped Groq language moderation because the API request failed.")
-        return None
+        decision = await self.moderate_message(text)
+        if decision.label in {"non_english", "gibberish"}:
+            return "non-english"
+        return "english"
+
+    async def moderate_message(self, text: str) -> ModerationDecision:
+        text = (text or "").strip()
+        if not text:
+            return ModerationDecision("allow", "empty message")
+        if self.enabled:
+            result, error = await self._create_completion(
+                system_prompt=MESSAGE_MODERATION_PROMPT,
+                prompt=f"Message:\n{text}",
+                temperature=0.0,
+                max_tokens=60,
+                top_p=1.0,
+            )
+            decision = self._parse_moderation_decision(result)
+            if decision is not None:
+                return decision
+            if error is not None:
+                log.warning("Falling back to heuristic moderation after AI moderation failure: %s", error)
+        return self._fallback_moderation(text)
 
     async def _call_groq(self, prompt: str) -> tuple[str | None, str | None]:
         return await self._create_completion(
@@ -246,6 +378,145 @@ class StudyAI:
         if self.status_reason == "missing_key":
             return "Groq is not configured because `GROQ_API_KEY` is missing from the environment."
         return "Groq AI is unavailable right now."
+
+    def _ask_token_budget(self, question: str) -> int:
+        lowered = question.lower()
+        if any(phrase in lowered for phrase in ("step by step", "detailed", "in detail", "full answer", "full explanation", "examples")):
+            return 600
+        if len(question) <= 120:
+            return 220
+        return 320
+
+    def _fallback_answer(self, question: str) -> str:
+        compact = question.strip().rstrip("?")
+        if not compact:
+            return "Ask a clear study question and I will keep the answer short."
+        return (
+            f"{self._unavailable_message()}\n\n"
+            f"Short fallback: focus on `{compact}` by learning the definition, one example, and one common mistake."
+        )
+
+    def _parse_moderation_decision(self, raw: str | None) -> ModerationDecision | None:
+        if not raw:
+            return None
+        line = raw.strip().splitlines()[0]
+        if "|" not in line:
+            return None
+        label, reason = line.split("|", 1)
+        normalized = label.strip().lower().replace("-", "_")
+        if normalized not in {"allow", "non_english", "gibberish", "explicit", "abusive"}:
+            return None
+        clean_reason = re.sub(r"\s+", " ", reason).strip()[:140] or self._default_reason(normalized)
+        return ModerationDecision(normalized, clean_reason)
+
+    def _default_reason(self, label: str) -> str:
+        reasons = {
+            "allow": "safe message",
+            "non_english": "message was not mainly English",
+            "gibberish": "message was not clear English",
+            "explicit": "message contained vulgar or explicit language",
+            "abusive": "message looked insulting or hostile",
+        }
+        return reasons.get(label, "message was flagged")
+
+    def _fallback_moderation(self, text: str) -> ModerationDecision:
+        lowered = text.lower()
+        tokens = set(re.findall(r"[a-z0-9']+", lowered))
+        if any(token in FALLBACK_EXPLICIT_WORDS for token in tokens):
+            return ModerationDecision("explicit", "message contained vulgar or explicit language")
+        if any(marker in lowered for marker in FALLBACK_ABUSIVE_MARKERS):
+            return ModerationDecision("abusive", "message looked insulting or hostile")
+        if self._looks_non_english(text):
+            return ModerationDecision("non_english", "message was not mainly English")
+        if self._looks_gibberish(text):
+            return ModerationDecision("gibberish", "message was not clear English")
+        return ModerationDecision("allow", "safe message")
+
+    def _looks_non_english(self, text: str) -> bool:
+        non_ascii_chars = [char for char in text if ord(char) > 127 and char.isprintable()]
+        ascii_letters = sum(char.isascii() and char.isalpha() for char in text)
+        if len(non_ascii_chars) >= 4 and ascii_letters <= len(non_ascii_chars):
+            return True
+        return False
+
+    def _looks_gibberish(self, text: str) -> bool:
+        cleaned = re.sub(r"[^a-z\s]", " ", text.lower())
+        words = [word for word in cleaned.split() if word]
+        if not words:
+            return False
+        if len(words) == 1 and words[0] in SAFE_SHORT_ENGLISH:
+            return False
+        letters = "".join(words)
+        if len(letters) < 8:
+            return False
+        if any(len(word) >= 6 and len(set(word)) <= 2 for word in words):
+            return True
+        if set(words).intersection(COMMON_ENGLISH_HINTS):
+            return False
+        vowel_ratio = sum(char in "aeiou" for char in letters) / max(1, len(letters))
+        return vowel_ratio < 0.22
+
+    def _parse_plan_entries(self, raw: str | None, days: int) -> list[dict[str, object]] | None:
+        if not raw:
+            return None
+        start = raw.find("[")
+        end = raw.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            payload = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, list):
+            return None
+        entries: list[dict[str, object]] = []
+        for index, row in enumerate(payload[:days], start=1):
+            if not isinstance(row, dict):
+                return None
+            title = str(row.get("day_title") or row.get("title") or f"Day {index}").strip()
+            tasks_value = row.get("tasks") or []
+            if isinstance(tasks_value, str):
+                tasks_value = [tasks_value]
+            if not isinstance(tasks_value, list):
+                return None
+            tasks = [re.sub(r"\s+", " ", str(task)).strip()[:120] for task in tasks_value if str(task).strip()]
+            tasks = tasks[:3]
+            if not tasks:
+                return None
+            entries.append({"day_title": title[:60] or f"Day {index}", "tasks": tasks})
+        if len(entries) != days:
+            return None
+        return entries
+
+    def _fallback_plan_entries(self, exam: str, days: int) -> list[dict[str, object]]:
+        entries: list[dict[str, object]] = []
+        for day in range(1, days + 1):
+            if day == 1:
+                tasks = [f"List the main topics for {exam}", "Pick the highest-priority chapter", "Start short revision notes"]
+                title = "Start Strong"
+            elif day < days * 0.6:
+                tasks = ["Study one core topic", "Write quick notes", "Do a few recall questions"]
+                title = "Core Learning"
+            elif day < days:
+                tasks = ["Practice mixed questions", "Review weak points", "Tighten summary notes"]
+                title = "Practice Phase"
+            else:
+                tasks = ["Revise the hardest topics", "Run one quick self-test", "Prepare final checklist"]
+                title = "Final Revision"
+            entries.append({"day_title": title, "tasks": tasks[:3]})
+        return entries
+
+    def _format_plan_entries(self, exam: str, entries: list[dict[str, object]]) -> str:
+        lines = [f"Study plan for {exam}:"]
+        for index, row in enumerate(entries, start=1):
+            title = str(row.get("day_title") or f"Day {index}")
+            tasks = row.get("tasks") or []
+            if isinstance(tasks, list):
+                compact_tasks = "; ".join(str(task) for task in tasks if str(task).strip())
+            else:
+                compact_tasks = str(tasks)
+            lines.append(f"{index}. {title}: {compact_tasks}")
+        return "\n".join(lines)
 
     def _keywords(self, text: str) -> list[str]:
         words = re.findall(r"[A-Za-z]{4,}", text.lower())

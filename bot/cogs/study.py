@@ -125,8 +125,43 @@ class Study(commands.Cog):
     async def plan_smart(self, ctx: commands.Context, exam: str, days: int) -> None:
         if getattr(ctx, "interaction", None) is not None and not ctx.interaction.response.is_done():
             await ctx.defer()
-        result = await self.bot.ai.generate_plan(exam, days)
-        await reply_embed(ctx, title="Smart Study Plan", description=result[:3500], color=INFO)
+        exam = (exam or "").strip()
+        if not exam:
+            await reply_embed(ctx, title="Exam Needed", description="Give me the exam or topic you want a plan for.", color=ERROR)
+            return
+        days = max(1, min(days, 30))
+        entries = await self.bot.ai.generate_plan_entries(exam, days)
+        if not entries:
+            await reply_embed(ctx, title="Plan Generation Failed", description="I could not build a smart plan right now.", color=ERROR)
+            return
+
+        start_date = datetime.now(UTC).date()
+        preview_lines: list[str] = []
+        for offset, entry in enumerate(entries):
+            target_day = start_date + timedelta(days=offset)
+            day_name = target_day.strftime("%A").lower()
+            day_title = str(entry.get("day_title") or "Study Block").strip()
+            tasks = entry.get("tasks") or []
+            if not isinstance(tasks, list):
+                tasks = [str(tasks)]
+            clean_tasks = [str(task).strip() for task in tasks if str(task).strip()][:3]
+            plan_text = "\n".join([f"{day_title}:", *[f"- {task}" for task in clean_tasks]])
+            self.bot.db.set_plan(ctx.guild.id, ctx.author.id, day_name, target_day.isoformat(), plan_text)
+            if offset < 5:
+                preview_lines.append(f"`{target_day.isoformat()}` {day_title}: {'; '.join(clean_tasks)}")
+
+        self.bot.db.add_xp(ctx.guild.id, ctx.author.id, min(30, days * 2))
+        await reply_embed(
+            ctx,
+            title="Smart Plan Saved",
+            description=f"Saved `{len(entries)}` AI study days for `{exam}`.",
+            color=INFO,
+            fields=[
+                ("Starts", start_date.isoformat(), True),
+                ("Ends", (start_date + timedelta(days=len(entries) - 1)).isoformat(), True),
+                ("Preview", "\n".join(preview_lines)[:1000] or "Plan saved.", False),
+            ],
+        )
 
     @commands.hybrid_group(name="remind", description="Create and manage study reminders.", invoke_without_command=True)
     async def remind(self, ctx: commands.Context) -> None:
