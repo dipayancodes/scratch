@@ -7,7 +7,7 @@ import re
 import discord
 from discord.ext import commands, tasks
 
-from bot.ui import ERROR, WARNING, make_embed
+from bot.ui import ERROR, WARNING, make_embed, reply_to_message
 
 
 log = logging.getLogger(__name__)
@@ -23,9 +23,6 @@ SPEAKER_PATTERN = re.compile(r"^\s*\w+\s*:", re.IGNORECASE)
 LANGUAGE_MUTE_DURATION = timedelta(hours=2)
 LANGUAGE_WARNING_DECAY_HOURS = 24
 LANGUAGE_BAN_REASON = "Using non-English language in English-only channels"
-TEXT_TIMEOUT_DURATION = timedelta(hours=1)
-TEXT_WARNING_THRESHOLD = 3
-TEXT_BAN_THRESHOLD = 5
 EXPLICIT_BAN_REASON = "Using explicit or vulgar language in the server"
 BEHAVIOR_BAN_REASON = "Using insulting or hostile language in the server"
 
@@ -51,15 +48,19 @@ class LanguageEnforcer(commands.Cog):
             return await helper(func, *args, default=default, operation=operation, **kwargs)
         return func(*args, **kwargs)
 
-    async def _delete_message(self, message: discord.Message) -> None:
-        try:
-            await message.delete()
-        except discord.HTTPException:
-            pass
+    def _flagged_excerpt(self, content: str) -> str:
+        compact = re.sub(r"\s+", " ", content or "").strip()
+        if not compact:
+            return "No readable text found."
+        compact = compact.replace("`", "'")
+        if len(compact) > 220:
+            return compact[:217] + "..."
+        return compact
 
-    async def _send_dm_notice(
+    async def _reply_warning(
         self,
         *,
+        message: discord.Message,
         member: discord.Member,
         title: str,
         description: str,
@@ -75,62 +76,79 @@ class LanguageEnforcer(commands.Cog):
             fields=fields,
         )
         try:
-            await member.send(embed=embed)
+            await reply_to_message(message, user=member, title=title, description=description, color=color, fields=fields)
         except discord.HTTPException:
-            log.info("Could not DM %s notice | guild=%s user=%s", log_label, member.guild.id, member.id)
+            log.info("Could not reply with %s notice | guild=%s user=%s", log_label, member.guild.id, member.id)
+            try:
+                await message.channel.send(
+                    content=member.mention,
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+            except discord.HTTPException:
+                log.info("Could not send fallback %s notice | guild=%s user=%s", log_label, member.guild.id, member.id)
+
+    async def _delete_message(self, message: discord.Message) -> None:
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
 
     async def _handle_language_issue(self, message: discord.Message, member: discord.Member, reason: str) -> bool:
-        await self._delete_message(message)
         counts = await self._db_call(
-            self.bot.db.add_language_warning,
+            self.bot.db.add_moderation_warning,
             message.guild.id,
             member.id,
-            default={"warning_count": 1, "mute_count": 0},
-            operation="add_language_warning",
+            default={"warning_count": 1, "timeout_count": 0},
+            operation="add_moderation_warning",
         )
         warning_count = int(counts.get("warning_count", 1))
-        mute_count = int(counts.get("mute_count", 0))
+        timeout_count = int(counts.get("timeout_count", 0))
         color = WARNING
-        action_text = f"Warning {warning_count}/3. This warning clears after {LANGUAGE_WARNING_DECAY_HOURS} hours if you stay compliant."
+        warning_text = f"{warning_count}/3"
+        action_text = "This warning stays active for 24 hours from your latest flagged message."
 
-        if warning_count > 3:
+        if warning_count >= 3:
             counts = await self._db_call(
-                self.bot.db.apply_language_mute,
+                self.bot.db.apply_moderation_timeout,
                 message.guild.id,
                 member.id,
-                default={"warning_count": 0, "mute_count": mute_count + 1},
-                operation="apply_language_mute",
+                default={"warning_count": 0, "timeout_count": timeout_count + 1},
+                operation="apply_moderation_timeout",
             )
-            warning_count = int(counts.get("warning_count", 0))
-            mute_count = int(counts.get("mute_count", mute_count + 1))
-            if mute_count >= 3:
+            timeout_count = int(counts.get("timeout_count", timeout_count + 1))
+            warning_text = "3/3"
+            if timeout_count >= 3:
                 try:
                     await member.ban(reason=LANGUAGE_BAN_REASON)
                     color = ERROR
-                    action_text = "You were banned for repeated non-English or unclear English messages."
+                    action_text = "You reached 3 timeouts, so you were banned permanently."
                 except discord.HTTPException:
                     color = ERROR
                     action_text = "Ban threshold reached, but I could not ban you because of permissions or role hierarchy."
             else:
                 try:
                     await member.timeout(discord.utils.utcnow() + LANGUAGE_MUTE_DURATION, reason=LANGUAGE_BAN_REASON)
-                    action_text = f"You were muted for {int(LANGUAGE_MUTE_DURATION.total_seconds() // 3600)} hours."
+                    action_text = f"You reached 3 warnings, so you were timed out for {int(LANGUAGE_MUTE_DURATION.total_seconds() // 3600)} hours."
                 except discord.HTTPException:
-                    action_text = "Mute threshold reached, but I could not mute you because of permissions or role hierarchy."
+                    action_text = "Timeout threshold reached, but I could not timeout you because of permissions or role hierarchy."
 
-        await self._send_dm_notice(
+        await self._reply_warning(
+            message=message,
             member=member,
             title="⚠️ English Only Warning",
             description="Your message was removed because it was not clear English for this server.",
             color=color,
             fields=[
+                ("Flagged Message", self._flagged_excerpt(message.content), False),
                 ("Reason", reason[:120], False),
-                ("Warnings", f"{warning_count}/3", True),
-                ("Mute Count", str(mute_count), True),
+                ("Warnings", warning_text, True),
+                ("Timeouts", str(timeout_count), True),
                 ("Action", action_text, False),
             ],
             log_label="language moderation",
         )
+        await self._delete_message(message)
         return True
 
     async def _handle_text_violation(
@@ -144,45 +162,68 @@ class LanguageEnforcer(commands.Cog):
         reason: str,
         moderation_reason: str,
     ) -> bool:
-        await self._delete_message(message)
-        recent_count = await self._db_call(
+        counts = await self._db_call(
+            self.bot.db.add_moderation_warning,
+            message.guild.id,
+            member.id,
+            default={"warning_count": 1, "timeout_count": 0},
+            operation=f"add_{kind}_warning",
+        )
+        color = WARNING
+        warning_count = int(counts.get("warning_count", 1))
+        timeout_count = int(counts.get("timeout_count", 0))
+        warning_text = f"{warning_count}/3"
+        action_text = "This warning stays active for 24 hours from your latest flagged message."
+        if warning_count >= 3:
+            counts = await self._db_call(
+                self.bot.db.apply_moderation_timeout,
+                message.guild.id,
+                member.id,
+                default={"warning_count": 0, "timeout_count": timeout_count + 1},
+                operation=f"apply_{kind}_timeout",
+            )
+            timeout_count = int(counts.get("timeout_count", timeout_count + 1))
+            warning_text = "3/3"
+        if timeout_count >= 3:
+            try:
+                await member.ban(reason=moderation_reason)
+                color = ERROR
+                action_text = "You reached 3 timeouts, so you were banned permanently."
+            except discord.HTTPException:
+                color = ERROR
+                action_text = "Ban threshold reached, but I could not ban you because of permissions or role hierarchy."
+        elif warning_count >= 3:
+            try:
+                await member.timeout(discord.utils.utcnow() + LANGUAGE_MUTE_DURATION, reason=moderation_reason)
+                action_text = f"You reached 3 warnings, so you were timed out for {int(LANGUAGE_MUTE_DURATION.total_seconds() // 3600)} hours."
+            except discord.HTTPException:
+                action_text = "Timeout threshold reached, but I could not timeout you because of permissions or role hierarchy."
+
+        await self._db_call(
             self.bot.db.record_text_violation,
             message.guild.id,
             member.id,
             kind,
             message.content,
-            default=1,
-            operation=f"record_{kind}_violation",
+            default=None,
+            operation=f"record_{kind}_event",
         )
-        color = WARNING
-        action_text = f"Warning {recent_count}/{TEXT_WARNING_THRESHOLD}. Continued violations will trigger automatic timeout."
-        if recent_count >= TEXT_BAN_THRESHOLD:
-            try:
-                await member.ban(reason=moderation_reason)
-                color = ERROR
-                action_text = "You were banned because this behavior kept repeating."
-            except discord.HTTPException:
-                color = ERROR
-                action_text = "Ban threshold reached, but I could not ban you because of permissions or role hierarchy."
-        elif recent_count >= TEXT_WARNING_THRESHOLD:
-            try:
-                await member.timeout(discord.utils.utcnow() + TEXT_TIMEOUT_DURATION, reason=moderation_reason)
-                action_text = f"You were timed out for {int(TEXT_TIMEOUT_DURATION.total_seconds() // 3600)} hour because this kept repeating."
-            except discord.HTTPException:
-                action_text = "Timeout threshold reached, but I could not timeout you because of permissions or role hierarchy."
-
-        await self._send_dm_notice(
+        await self._reply_warning(
+            message=message,
             member=member,
             title=title,
             description=description,
             color=color,
             fields=[
+                ("Flagged Message", self._flagged_excerpt(message.content), False),
                 ("Reason", reason[:120], False),
-                ("Recent Violations", str(recent_count), True),
+                ("Warnings", warning_text, True),
+                ("Timeouts", str(timeout_count), True),
                 ("Action", action_text, False),
             ],
             log_label=kind,
         )
+        await self._delete_message(message)
         return True
 
     async def handle_message(self, message: discord.Message) -> bool:
@@ -246,12 +287,12 @@ class LanguageEnforcer(commands.Cog):
     @tasks.loop(hours=1)
     async def warning_decay_worker(self) -> None:
         cleared = await self._db_call(
-            self.bot.db.clear_expired_language_warnings,
+            self.bot.db.clear_expired_moderation_warnings,
             default=0,
-            operation="clear_expired_language_warnings",
+            operation="clear_expired_moderation_warnings",
         )
         if cleared:
-            log.info("Cleared %s expired language warnings.", cleared)
+            log.info("Cleared %s expired moderation warnings.", cleared)
 
     @warning_decay_worker.before_loop
     async def before_warning_decay_worker(self) -> None:

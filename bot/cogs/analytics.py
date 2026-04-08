@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import discord
 from discord.ext import commands
 
 from bot.cog_helpers import progress_bar
+from bot.dashboard_card import render_dashboard_card
 from bot.ui import INFO, reply_embed
 
 
@@ -34,27 +36,58 @@ class Analytics(commands.Cog):
 
     @commands.hybrid_command(name="dashboard", description="Show a combined study dashboard with tasks, goals, and streaks.")
     async def dashboard(self, ctx: commands.Context) -> None:
+        if getattr(ctx, "interaction", None) is not None and not ctx.interaction.response.is_done():
+            await ctx.defer()
         data = self.bot.db.get_dashboard_data(ctx.guild.id, ctx.author.id)
         summary = data["summary"]
-        tasks = "\n".join(f"`{row['id']}` {row['content']}" for row in data["tasks"]) or "No pending tasks"
-        exams = "\n".join(f"`{row['id']}` {row['subject']} - {row['exam_date']}" for row in data["exams"]) or "No exams saved"
-        plans = "\n".join(f"{row['day'].title()} - {row['target_date']}" for row in data["plans"]) or "No saved plans"
-        goal_bar = progress_bar(summary["today_hours"], summary["daily_goal_hours"])
-        await reply_embed(
-            ctx,
-            title="Study Dashboard",
-            description="Your all-in-one study snapshot.",
-            color=INFO,
-            fields=[
-                ("Streak", f"`{summary['streak']}` days", True),
-                ("Coins", f"`{summary['coins']}`", True),
-                ("Level", f"`{summary['level']}`", True),
-                ("Goal", f"`{goal_bar}`", False),
-                ("Tasks", tasks, False),
-                ("Plans", plans, False),
-                ("Exams", exams, False),
-            ],
-        )
+        try:
+            image_bytes = await render_dashboard_card(
+                member=ctx.author,
+                summary=summary,
+                tasks=data["tasks"],
+                plans=data["plans"],
+                exams=data["exams"],
+                inventory=data.get("inventory", []),
+            )
+            file = discord.File(image_bytes, filename="study-dashboard.png")
+            embed = discord.Embed(
+                title="Study Dashboard",
+                description="Your visual study profile is ready.",
+                color=INFO,
+            )
+            embed.set_image(url="attachment://study-dashboard.png")
+            if getattr(ctx, "interaction", None) is not None:
+                await ctx.interaction.followup.send(
+                    content=ctx.author.mention,
+                    embed=embed,
+                    file=file,
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+                return
+            await ctx.reply(content=ctx.author.mention, embed=embed, file=file, mention_author=False)
+            return
+        except Exception:
+            tasks = "\n".join(f"`{row['id']}` {row['content']}" for row in data["tasks"]) or "No pending tasks"
+            exams = "\n".join(f"`{row['id']}` {row['subject']} - {row['exam_date']}" for row in data["exams"]) or "No exams saved"
+            plans = "\n".join(f"{row['day'].title()} - {row['target_date']}" for row in data["plans"]) or "No saved plans"
+            inventory = "\n".join(f"{row['item_name']} x`{row['quantity']}`" for row in data.get("inventory", [])) or "No shop items bought yet"
+            goal_bar = progress_bar(summary["today_hours"], summary["daily_goal_hours"])
+            await reply_embed(
+                ctx,
+                title="Study Dashboard",
+                description="Your all-in-one study snapshot.",
+                color=INFO,
+                fields=[
+                    ("Streak", f"`{summary['streak']}` days", True),
+                    ("Coins", f"`{summary['coins']}`", True),
+                    ("Level", f"`{summary['level']}`", True),
+                    ("Goal", f"`{goal_bar}`", False),
+                    ("Tasks", tasks, False),
+                    ("Plans", plans, False),
+                    ("Exams", exams, False),
+                    ("Loadout", inventory, False),
+                ],
+            )
 
     @commands.hybrid_group(name="vc", description="Review voice study tracking.", invoke_without_command=True)
     async def vc(self, ctx: commands.Context) -> None:

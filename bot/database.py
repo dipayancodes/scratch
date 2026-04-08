@@ -174,6 +174,9 @@ class Database:
             "language_warning_count": 0,
             "language_mute_count": 0,
             "language_warning_expires_at": None,
+            "moderation_warning_count": 0,
+            "moderation_timeout_count": 0,
+            "moderation_warning_expires_at": None,
         }
         self.db.user_stats.update_one(
             {"guild_id": guild_id, "user_id": user_id},
@@ -625,63 +628,90 @@ class Database:
         self.db.user_stats.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"distraction_warnings": 1}})
         self.db.users.update_one({"guild_id": guild_id, "user_id": user_id}, {"$inc": {"distraction_warnings": 1}})
 
-    def _clear_expired_language_warning_for_user(self, guild_id: int, user_id: int) -> None:
+    def _clear_expired_moderation_warning_for_user(self, guild_id: int, user_id: int) -> None:
         now = utc_now()
         query = {
             "guild_id": guild_id,
             "user_id": user_id,
-            "language_warning_count": {"$gt": 0},
-            "language_warning_expires_at": {"$lte": now},
+            "moderation_warning_count": {"$gt": 0},
+            "moderation_warning_expires_at": {"$lte": now},
         }
-        updates = {"language_warning_count": 0, "language_warning_expires_at": None}
+        updates = {"moderation_warning_count": 0, "moderation_warning_expires_at": None}
         self.db.users.update_one(query, {"$set": updates})
         self.db.user_stats.update_one(query, {"$set": updates})
 
-    def get_language_enforcement(self, guild_id: int, user_id: int) -> dict[str, int]:
-        self._clear_expired_language_warning_for_user(guild_id, user_id)
+    def get_moderation_enforcement(self, guild_id: int, user_id: int) -> dict[str, int]:
+        self._clear_expired_moderation_warning_for_user(guild_id, user_id)
         stats = self.get_user_stats(guild_id, user_id)
         return {
-            "warning_count": int(stats.get("language_warning_count", 0)),
-            "mute_count": int(stats.get("language_mute_count", 0)),
+            "warning_count": int(stats.get("moderation_warning_count", 0)),
+            "timeout_count": int(stats.get("moderation_timeout_count", 0)),
         }
 
-    def add_language_warning(self, guild_id: int, user_id: int) -> dict[str, int]:
+    def add_moderation_warning(self, guild_id: int, user_id: int) -> dict[str, int]:
         self.ensure_user_stats(guild_id, user_id)
-        self._clear_expired_language_warning_for_user(guild_id, user_id)
+        self._clear_expired_moderation_warning_for_user(guild_id, user_id)
         expires_at = utc_now() + LANGUAGE_WARNING_DECAY
         self.db.users.update_one(
             {"guild_id": guild_id, "user_id": user_id},
-            {"$inc": {"language_warning_count": 1}, "$set": {"language_warning_expires_at": expires_at}},
+            {"$inc": {"moderation_warning_count": 1}, "$set": {"moderation_warning_expires_at": expires_at}},
         )
         self.db.user_stats.update_one(
             {"guild_id": guild_id, "user_id": user_id},
-            {"$inc": {"language_warning_count": 1}, "$set": {"language_warning_expires_at": expires_at}},
+            {"$inc": {"moderation_warning_count": 1}, "$set": {"moderation_warning_expires_at": expires_at}},
         )
-        return self.get_language_enforcement(guild_id, user_id)
+        return self.get_moderation_enforcement(guild_id, user_id)
 
-    def apply_language_mute(self, guild_id: int, user_id: int) -> dict[str, int]:
+    def apply_moderation_timeout(self, guild_id: int, user_id: int) -> dict[str, int]:
         self.ensure_user_stats(guild_id, user_id)
-        updates = {"language_warning_count": 0, "language_warning_expires_at": None}
+        updates = {"moderation_warning_count": 0, "moderation_warning_expires_at": None}
         self.db.users.update_one(
             {"guild_id": guild_id, "user_id": user_id},
-            {"$set": updates, "$inc": {"language_mute_count": 1}},
+            {"$set": updates, "$inc": {"moderation_timeout_count": 1}},
         )
         self.db.user_stats.update_one(
             {"guild_id": guild_id, "user_id": user_id},
-            {"$set": updates, "$inc": {"language_mute_count": 1}},
+            {"$set": updates, "$inc": {"moderation_timeout_count": 1}},
         )
-        return self.get_language_enforcement(guild_id, user_id)
+        return self.get_moderation_enforcement(guild_id, user_id)
 
-    def clear_expired_language_warnings(self) -> int:
+    def clear_expired_moderation_warnings(self) -> int:
         now = utc_now()
         query = {
-            "language_warning_count": {"$gt": 0},
-            "language_warning_expires_at": {"$lte": now},
+            "moderation_warning_count": {"$gt": 0},
+            "moderation_warning_expires_at": {"$lte": now},
         }
-        updates = {"language_warning_count": 0, "language_warning_expires_at": None}
+        updates = {"moderation_warning_count": 0, "moderation_warning_expires_at": None}
         result = self.db.users.update_many(query, {"$set": updates})
         self.db.user_stats.update_many(query, {"$set": updates})
         return int(result.modified_count)
+
+    def _clear_expired_language_warning_for_user(self, guild_id: int, user_id: int) -> None:
+        self._clear_expired_moderation_warning_for_user(guild_id, user_id)
+
+    def get_language_enforcement(self, guild_id: int, user_id: int) -> dict[str, int]:
+        counts = self.get_moderation_enforcement(guild_id, user_id)
+        return {
+            "warning_count": counts["warning_count"],
+            "mute_count": counts["timeout_count"],
+        }
+
+    def add_language_warning(self, guild_id: int, user_id: int) -> dict[str, int]:
+        counts = self.add_moderation_warning(guild_id, user_id)
+        return {
+            "warning_count": counts["warning_count"],
+            "mute_count": counts["timeout_count"],
+        }
+
+    def apply_language_mute(self, guild_id: int, user_id: int) -> dict[str, int]:
+        counts = self.apply_moderation_timeout(guild_id, user_id)
+        return {
+            "warning_count": counts["warning_count"],
+            "mute_count": counts["timeout_count"],
+        }
+
+    def clear_expired_language_warnings(self) -> int:
+        return self.clear_expired_moderation_warnings()
 
     def add_warning(self, guild_id: int, user_id: int, moderator_id: int, reason: str) -> int:
         warning_id = self._next_id("warnings")
@@ -1066,12 +1096,14 @@ class Database:
         tasks = self.list_tasks(guild_id, user_id)[:5]
         exams = self.list_exams(guild_id, user_id)[:5]
         plans = self.list_plans(guild_id, user_id)[:3]
+        inventory = self.get_inventory(guild_id, user_id)[:8]
         return {
             "stats": stats,
             "summary": summary,
             "tasks": tasks,
             "exams": exams,
             "plans": plans,
+            "inventory": inventory,
         }
 
     def get_voice_stats(self, guild_id: int, user_id: int) -> dict[str, int]:
