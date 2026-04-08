@@ -206,6 +206,14 @@ class LanguageEnforcer(commands.Cog):
         decision = await self.bot.ai.moderate_message(content)
         if decision.label == "allow":
             return False
+        log.info(
+            "AI moderation flagged message | guild=%s channel=%s user=%s label=%s reason=%s",
+            message.guild.id,
+            message.channel.id,
+            message.author.id,
+            decision.label,
+            decision.reason,
+        )
 
         member = message.author if isinstance(message.author, discord.Member) else message.guild.get_member(message.author.id)
         if member is None:

@@ -39,6 +39,12 @@ MESSAGE_MODERATION_PROMPT = (
     "Use gibberish when it is unreadable, nonsense, or not meaningful English.\n"
     "Use explicit when it is sexual, vulgar, obscene, slur-heavy, or clearly inappropriate slang.\n"
     "Use abusive when it is insulting, harassing, baiting, demeaning, threatening, or hostile arguing.\n"
+    "Targeted insults against a person or their family are abusive.\n"
+    "Sexual taunts, mother insults, or crude family remarks are explicit or abusive, never allow.\n"
+    "Examples:\n"
+    '- "your dad is an asshole" -> abusive|targeted insult\n'
+    '- "your mom sleeps beside me" -> explicit|sexual taunt\n'
+    '- "shut up you idiot" -> abusive|targeted insult\n'
     "Treat short English slang like lol, bro, brb, lmao, ok, yup as allow unless it is vulgar or abusive.\n"
     "Treat harmless jokes as allow, but hostile jokes targeting a person as abusive.\n"
     "If unsure, choose allow.\n"
@@ -80,6 +86,7 @@ SAFE_SHORT_ENGLISH = {
     "yup",
 }
 FALLBACK_EXPLICIT_WORDS = {
+    "asshole",
     "bastard",
     "bitch",
     "cock",
@@ -114,6 +121,10 @@ FALLBACK_ABUSIVE_MARKERS = (
     "screw you",
     "trash",
     "ugly rat",
+    "your dad is an asshole",
+    "your mom sleeps beside me",
+    "your mom sleeps with me",
+    "your mom with me",
     "you suck",
 )
 COMMON_ENGLISH_HINTS = {
