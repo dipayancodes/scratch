@@ -9,6 +9,10 @@ import re
 
 
 log = logging.getLogger(__name__)
+DEPRECATED_MODEL_REPLACEMENTS = {
+    "llama3-8b-8192": "llama-3.1-8b-instant",
+    "llama3-70b-8192": "llama-3.3-70b-versatile",
+}
 FALLBACK_MODELS = (
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
@@ -160,12 +164,14 @@ class ModerationDecision:
 class StudyAI:
     def __init__(self, api_key: str | None, model: str) -> None:
         self.api_key = api_key
-        self.model = model
+        self.model = self._normalize_model_name(model)
         self.client = None
         self.last_error: str | None = None
         self.last_model: str | None = None
         self.status_reason = "missing_key" if not api_key else "ready"
         self._request_semaphore = asyncio.Semaphore(3)
+        if model != self.model:
+            log.warning("Configured Groq model %s is deprecated. Using %s instead.", model, self.model)
         if api_key:
             try:
                 from groq import AsyncGroq
@@ -390,6 +396,12 @@ class StudyAI:
         if self.status_reason == "missing_key":
             return "Groq is not configured because `GROQ_API_KEY` is missing from the environment."
         return "Groq AI is unavailable right now."
+
+    def _normalize_model_name(self, model: str) -> str:
+        clean = (model or "").strip()
+        if not clean:
+            return "llama-3.1-8b-instant"
+        return DEPRECATED_MODEL_REPLACEMENTS.get(clean, clean)
 
     def _ask_token_budget(self, question: str) -> int:
         lowered = question.lower()
