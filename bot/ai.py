@@ -35,12 +35,8 @@ MESSAGE_MODERATION_PROMPT = (
     "Return exactly one line in this format: label|short reason\n"
     "Allowed labels:\n"
     "- allow\n"
-    "- non_english\n"
-    "- gibberish\n"
     "- explicit\n"
     "- abusive\n"
-    "Use non_english when the message is mainly another language or romanized non-English.\n"
-    "Use gibberish when it is unreadable, nonsense, or not meaningful English.\n"
     "Use explicit when it is sexual, vulgar, obscene, slur-heavy, or clearly inappropriate slang.\n"
     "Use abusive when it is insulting, harassing, baiting, demeaning, threatening, or hostile arguing.\n"
     "Targeted insults against a person or their family are abusive.\n"
@@ -60,35 +56,6 @@ PLAN_SYSTEM_PROMPT = (
     "Make each day minimal but useful.\n"
     "Each day should have 1 to 3 short tasks, not long paragraphs."
 )
-SAFE_SHORT_ENGLISH = {
-    "aight",
-    "alr",
-    "brb",
-    "bro",
-    "cool",
-    "fine",
-    "gg",
-    "hi",
-    "hmm",
-    "k",
-    "kk",
-    "lmao",
-    "lol",
-    "nah",
-    "nice",
-    "nope",
-    "ok",
-    "okay",
-    "pls",
-    "sure",
-    "thx",
-    "ty",
-    "wait",
-    "what",
-    "yep",
-    "yo",
-    "yup",
-}
 FALLBACK_EXPLICIT_WORDS = {
     "asshole",
     "bastard",
@@ -131,28 +98,6 @@ FALLBACK_ABUSIVE_MARKERS = (
     "your mom with me",
     "you suck",
 )
-COMMON_ENGLISH_HINTS = {
-    "about",
-    "after",
-    "because",
-    "bro",
-    "could",
-    "exam",
-    "have",
-    "hello",
-    "please",
-    "study",
-    "thanks",
-    "there",
-    "think",
-    "what",
-    "when",
-    "where",
-    "which",
-    "why",
-    "will",
-    "would",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,15 +239,6 @@ class StudyAI:
 
         return self._fallback_plan_entries(exam, days)
 
-    async def classify_language(self, text: str) -> str | None:
-        text = (text or "").strip()
-        if not text:
-            return "english"
-        decision = await self.moderate_message(text)
-        if decision.label in {"non_english", "gibberish"}:
-            return "non-english"
-        return "english"
-
     async def moderate_message(self, text: str) -> ModerationDecision:
         text = (text or "").strip()
         if not text:
@@ -428,7 +364,7 @@ class StudyAI:
             return None
         label, reason = line.split("|", 1)
         normalized = label.strip().lower().replace("-", "_")
-        if normalized not in {"allow", "non_english", "gibberish", "explicit", "abusive"}:
+        if normalized not in {"allow", "explicit", "abusive"}:
             return None
         clean_reason = re.sub(r"\s+", " ", reason).strip()[:140] or self._default_reason(normalized)
         return ModerationDecision(normalized, clean_reason)
@@ -436,8 +372,6 @@ class StudyAI:
     def _default_reason(self, label: str) -> str:
         reasons = {
             "allow": "safe message",
-            "non_english": "message was not mainly English",
-            "gibberish": "message was not clear English",
             "explicit": "message contained vulgar or explicit language",
             "abusive": "message looked insulting or hostile",
         }
@@ -450,35 +384,7 @@ class StudyAI:
             return ModerationDecision("explicit", "message contained vulgar or explicit language")
         if any(marker in lowered for marker in FALLBACK_ABUSIVE_MARKERS):
             return ModerationDecision("abusive", "message looked insulting or hostile")
-        if self._looks_non_english(text):
-            return ModerationDecision("non_english", "message was not mainly English")
-        if self._looks_gibberish(text):
-            return ModerationDecision("gibberish", "message was not clear English")
         return ModerationDecision("allow", "safe message")
-
-    def _looks_non_english(self, text: str) -> bool:
-        non_ascii_chars = [char for char in text if ord(char) > 127 and char.isprintable()]
-        ascii_letters = sum(char.isascii() and char.isalpha() for char in text)
-        if len(non_ascii_chars) >= 4 and ascii_letters <= len(non_ascii_chars):
-            return True
-        return False
-
-    def _looks_gibberish(self, text: str) -> bool:
-        cleaned = re.sub(r"[^a-z\s]", " ", text.lower())
-        words = [word for word in cleaned.split() if word]
-        if not words:
-            return False
-        if len(words) == 1 and words[0] in SAFE_SHORT_ENGLISH:
-            return False
-        letters = "".join(words)
-        if len(letters) < 8:
-            return False
-        if any(len(word) >= 6 and len(set(word)) <= 2 for word in words):
-            return True
-        if set(words).intersection(COMMON_ENGLISH_HINTS):
-            return False
-        vowel_ratio = sum(char in "aeiou" for char in letters) / max(1, len(letters))
-        return vowel_ratio < 0.22
 
     def _parse_plan_entries(self, raw: str | None, days: int) -> list[dict[str, object]] | None:
         if not raw:

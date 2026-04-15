@@ -22,7 +22,7 @@ REPORTING_PATTERN = re.compile(r"\b\w+\s+(said|told|mentioned|wrote|replied|aske
 SPEAKER_PATTERN = re.compile(r"^\s*\w+\s*:", re.IGNORECASE)
 LANGUAGE_MUTE_DURATION = timedelta(hours=2)
 LANGUAGE_WARNING_DECAY_HOURS = 24
-LANGUAGE_BAN_REASON = "Using non-English language in English-only channels"
+NON_ENGLISH_LETTERS_BAN_REASON = "Using non-English letters in the server"
 EXPLICIT_BAN_REASON = "Using explicit or vulgar language in the server"
 BEHAVIOR_BAN_REASON = "Using insulting or hostile language in the server"
 
@@ -56,6 +56,9 @@ class LanguageEnforcer(commands.Cog):
         if len(compact) > 220:
             return compact[:217] + "..."
         return compact
+
+    def _contains_non_english_letters(self, content: str) -> bool:
+        return any(char.isalpha() and not char.isascii() for char in content or "")
 
     async def _reply_warning(
         self,
@@ -120,7 +123,7 @@ class LanguageEnforcer(commands.Cog):
             warning_text = "3/3"
             if timeout_count >= 3:
                 try:
-                    await member.ban(reason=LANGUAGE_BAN_REASON)
+                    await member.ban(reason=NON_ENGLISH_LETTERS_BAN_REASON)
                     color = ERROR
                     action_text = "You reached 3 timeouts, so you were banned permanently."
                 except discord.HTTPException:
@@ -128,7 +131,7 @@ class LanguageEnforcer(commands.Cog):
                     action_text = "Ban threshold reached, but I could not ban you because of permissions or role hierarchy."
             else:
                 try:
-                    await member.timeout(discord.utils.utcnow() + LANGUAGE_MUTE_DURATION, reason=LANGUAGE_BAN_REASON)
+                    await member.timeout(discord.utils.utcnow() + LANGUAGE_MUTE_DURATION, reason=NON_ENGLISH_LETTERS_BAN_REASON)
                     action_text = f"You reached 3 warnings, so you were timed out for {int(LANGUAGE_MUTE_DURATION.total_seconds() // 3600)} hours."
                 except discord.HTTPException:
                     action_text = "Timeout threshold reached, but I could not timeout you because of permissions or role hierarchy."
@@ -136,8 +139,8 @@ class LanguageEnforcer(commands.Cog):
         await self._reply_warning(
             message=message,
             member=member,
-            title="⚠️ English Only Warning",
-            description="Your message was removed because it was not clear English for this server.",
+            title="⚠️ Non-English Letters Warning",
+            description="Your message was removed because it contained non-English letters.",
             color=color,
             fields=[
                 ("Flagged Message", self._flagged_excerpt(message.content), False),
@@ -244,6 +247,19 @@ class LanguageEnforcer(commands.Cog):
         if is_reporting_sentence(content):
             return False
 
+        member = message.author if isinstance(message.author, discord.Member) else message.guild.get_member(message.author.id)
+        if member is None:
+            return False
+
+        if self._contains_non_english_letters(content):
+            log.info(
+                "Non-English letters flagged message | guild=%s channel=%s user=%s",
+                message.guild.id,
+                message.channel.id,
+                message.author.id,
+            )
+            return await self._handle_language_issue(message, member, "message contained non-English letters")
+
         decision = await self.bot.ai.moderate_message(content)
         if decision.label == "allow":
             return False
@@ -256,12 +272,6 @@ class LanguageEnforcer(commands.Cog):
             decision.reason,
         )
 
-        member = message.author if isinstance(message.author, discord.Member) else message.guild.get_member(message.author.id)
-        if member is None:
-            return False
-
-        if decision.label in {"non_english", "gibberish"}:
-            return await self._handle_language_issue(message, member, decision.reason)
         if decision.label == "explicit":
             return await self._handle_text_violation(
                 message=message,
