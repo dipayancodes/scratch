@@ -385,11 +385,23 @@ def _clean_inventory_name(value: str) -> str:
 
 @lru_cache(maxsize=12)
 def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    font_filename = "arialbd.ttf" if bold else "arial.ttf"
+    fallback_filename = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    pil_dir = os.path.dirname(ImageFont.__file__)
     candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        font_filename,
+        fallback_filename,
+        os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", font_filename),
+        os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", fallback_filename),
+        os.path.join("/usr/share/fonts/truetype/dejavu", fallback_filename),
+        os.path.join("/usr/share/fonts/dejavu", fallback_filename),
+        os.path.join("/usr/share/fonts/truetype/liberation2", "LiberationSans-Bold.ttf" if bold else "LiberationSans-Regular.ttf"),
+        os.path.join(pil_dir, "fonts", fallback_filename),
+        os.path.join(pil_dir, "Fonts", fallback_filename),
     ]
-    for path in candidates:
-        if os.path.exists(path):
-            return ImageFont.truetype(path, size=size)
+    for candidate in candidates:
+        try:
+            return ImageFont.truetype(candidate, size=size)
+        except OSError:
+            continue
     return ImageFont.load_default()
