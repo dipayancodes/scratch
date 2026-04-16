@@ -91,7 +91,7 @@ class Study(commands.Cog):
 
     @commands.hybrid_group(name="plan", description="Create and review day-based study plans.", invoke_without_command=True)
     async def plan(self, ctx: commands.Context) -> None:
-        await reply_embed(ctx, title="Plan Commands", description="Use `/plan set`, `/plan view`, `/plan today`, or `/plan smart`.", color=INFO)
+        await reply_embed(ctx, title="Plan Commands", description="Use `/plan set`, `/plan view`, `/plan today`, `/plan delete`, or `/plan smart`.", color=INFO)
 
     @plan.command(name="set", description="Save your study plan for the next occurrence of a weekday.")
     @app_commands.describe(day="Choose the day you want to plan for.", tasks="The study tasks for that day.")
@@ -120,6 +120,22 @@ class Study(commands.Cog):
             await reply_embed(ctx, title="No Plan For Today", description="You have no saved plan for today's date.", color=WARNING)
             return
         await reply_embed(ctx, title=f"Today's Plan: {plan['day'].title()} {plan['target_date']}", description=plan["tasks"][:3500], color=INFO)
+
+    @plan.command(name="delete", description="Delete one of your saved plans.")
+    @app_commands.describe(day="Pick one of your saved plans to remove.")
+    @app_commands.autocomplete(day=saved_plan_autocomplete)
+    async def plan_delete(self, ctx: commands.Context, day: str) -> None:
+        plan = self.bot.db.get_plan_by_date(ctx.guild.id, ctx.author.id, day)
+        if not plan:
+            await reply_embed(ctx, title="Plan Not Found", description="No saved plan exists for that date.", color=WARNING)
+            return
+        self.bot.db.delete_plan(ctx.guild.id, ctx.author.id, day)
+        await reply_embed(
+            ctx,
+            title="Plan Deleted",
+            description=f"Removed your `{plan['day'].title()}` plan for `{plan['target_date']}`.",
+            color=SUCCESS,
+        )
 
     @plan.command(name="smart", aliases=["generate"], description="Generate a smart AI study plan for an exam.")
     async def plan_smart(self, ctx: commands.Context, exam: str, days: int) -> None:
@@ -212,7 +228,7 @@ class Study(commands.Cog):
 
     @commands.hybrid_group(name="exam", description="Track exams and countdowns.", invoke_without_command=True)
     async def exam(self, ctx: commands.Context) -> None:
-        await reply_embed(ctx, title="Exam Commands", description="Use `/exam add`, `/exam list`, or `/exam countdown`.", color=INFO)
+        await reply_embed(ctx, title="Exam Commands", description="Use `/exam add`, `/exam list`, `/exam countdown`, `/exam edit`, or `/exam delete`.", color=INFO)
 
     @exam.command(name="add", description="Add an upcoming exam.")
     @app_commands.autocomplete(subject=subject_autocomplete)
@@ -254,6 +270,32 @@ class Study(commands.Cog):
         today = datetime.now(UTC).date()
         value = [f"{row['subject']}: `{(datetime.fromisoformat(row['exam_date']).date() - today).days}` days left" for row in exams[:20]]
         await reply_embed(ctx, title="Exam Countdown", description="\n".join(value), color=INFO)
+
+    @exam.command(name="edit", description="Edit an existing exam by exam ID.")
+    @app_commands.autocomplete(subject=subject_autocomplete)
+    async def exam_edit(self, ctx: commands.Context, exam_id: int, subject: str, date: str, custom_subject: str = "") -> None:
+        try:
+            resolved_subject = resolve_subject(ctx, subject, custom_subject)
+            exam_date = parse_exam_date(date)
+        except ValueError as exc:
+            await reply_embed(ctx, title="Invalid Exam Input", description=str(exc), color=ERROR)
+            return
+        if not self.bot.db.update_exam(ctx.guild.id, ctx.author.id, exam_id, resolved_subject, exam_date):
+            await reply_embed(ctx, title="Exam Not Found", description=f"No exam exists with ID `{exam_id}`.", color=ERROR)
+            return
+        await reply_embed(
+            ctx,
+            title="Exam Updated",
+            description=f"Updated exam `{exam_id}` to `{resolved_subject}` on `{exam_date}`.",
+            color=SUCCESS,
+        )
+
+    @exam.command(name="delete", description="Delete one of your saved exams by exam ID.")
+    async def exam_delete(self, ctx: commands.Context, exam_id: int) -> None:
+        if not self.bot.db.delete_exam(ctx.guild.id, ctx.author.id, exam_id):
+            await reply_embed(ctx, title="Exam Not Found", description=f"No exam exists with ID `{exam_id}`.", color=ERROR)
+            return
+        await reply_embed(ctx, title="Exam Deleted", description=f"Removed exam `{exam_id}`.", color=SUCCESS)
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -54,15 +54,8 @@ class Analytics(commands.Cog):
                 inventory=data.get("inventory", []),
             )
             file = discord.File(image_bytes, filename="study-dashboard.png")
-            embed = discord.Embed(
-                title="Study Dashboard",
-                description="Your visual study profile is ready.",
-                color=INFO,
-            )
-            embed.set_image(url="attachment://study-dashboard.png")
             await ctx.send(
                 content=ctx.author.mention,
-                embed=embed,
                 file=file,
                 allowed_mentions=discord.AllowedMentions(users=True),
             )

@@ -199,8 +199,19 @@ class Database:
             upsert=True,
         )
 
+    def _next_task_id_for_user(self, guild_id: int, user_id: int) -> int:
+        row = self.db.tasks.find_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"_id": 0, "id": 1},
+            sort=[("id", DESCENDING)],
+        )
+        if row is None:
+            return 1
+        raw_id = row.get("id")
+        return int(raw_id) + 1 if isinstance(raw_id, int) else 1
+
     def add_task(self, guild_id: int, user_id: int, content: str) -> int:
-        task_id = self._next_id("tasks")
+        task_id = self._next_task_id_for_user(guild_id, user_id)
         self.db.tasks.insert_one(
             {
                 "id": task_id,
@@ -273,6 +284,10 @@ class Database:
 
     def list_plans(self, guild_id: int, user_id: int) -> list[dict]:
         return list(self.db.plans.find({"guild_id": guild_id, "user_id": user_id}, {"_id": 0}).sort("target_date", ASCENDING))
+
+    def delete_plan(self, guild_id: int, user_id: int, target_date: str) -> bool:
+        result = self.db.plans.delete_one({"guild_id": guild_id, "user_id": user_id, "target_date": target_date})
+        return result.deleted_count > 0
 
     def add_progress(self, guild_id: int, user_id: int, subject: str, hours: float) -> None:
         payload = {
@@ -586,6 +601,17 @@ class Database:
         if subject:
             query["subject_key"] = subject.lower()
         return list(self.db.exams.find(query, {"_id": 0}).sort("exam_date", ASCENDING))
+
+    def update_exam(self, guild_id: int, user_id: int, exam_id: int, subject: str, exam_date: str) -> bool:
+        result = self.db.exams.update_one(
+            {"guild_id": guild_id, "user_id": user_id, "id": exam_id},
+            {"$set": {"subject": subject, "subject_key": subject.lower(), "exam_date": exam_date}},
+        )
+        return result.matched_count > 0
+
+    def delete_exam(self, guild_id: int, user_id: int, exam_id: int) -> bool:
+        result = self.db.exams.delete_one({"guild_id": guild_id, "user_id": user_id, "id": exam_id})
+        return result.deleted_count > 0
 
     def add_coins(self, guild_id: int, user_id: int, amount: int) -> None:
         self.ensure_user_stats(guild_id, user_id)
